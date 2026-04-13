@@ -1,0 +1,835 @@
+#!/usr/bin/env python3
+"""
+rooms — git worktree manager with a hospital-room metaphor.
+
+Usage:
+  rooms add <path-or-url> <room-name> [branch]
+  rooms ls
+  rooms free <project/room>
+  rooms move <project/source-room> <project/target-room>
+  rooms occupy <project/room> [branch]
+  rooms purge
+  rooms config set-base-path <path>
+
+Internal (used by shell wrapper / completion):
+  rooms _occupy <project/room> [branch]   prints worktree path on success
+  rooms _names                             prints project/room names, one per line
+  rooms _branches <project/room>           prints branch names for that room
+"""
+
+import json
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+CONFIG_PATH = Path.home() / ".config" / "rooms" / "config.json"
+DEFAULT_ROOMS_BASE = str(Path.home() / "rooms")
+
+# ANSI colours
+GREEN  = "\033[32m"
+ORANGE = "\033[33m"
+BOLD   = "\033[1m"
+DIM    = "\033[2m"
+RESET  = "\033[0m"
+
+
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    return {"rooms_base": DEFAULT_ROOMS_BASE, "rooms": []}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+
+
+def load_cache(cfg: dict) -> dict:
+    return cfg.setdefault("cache", {})
+
+
+def save_cache(cfg: dict, cache: dict, updated_at: int | None = None) -> None:
+    cfg["cache"] = cache
+    if updated_at is not None:
+        cfg["cache_updated_at"] = updated_at
+    save_config(cfg)
+
+
+def expand(path: str) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
+def project_of(room: dict) -> str:
+    """Return the project name (repo basename) for a room."""
+    return Path(room["main_repo"]).name
+
+
+def resolve_room(cfg: dict, spec: str) -> dict:
+    """Resolve 'project/name' or bare 'name' to a room dict, or exit with an error."""
+    rooms = cfg.get("rooms", [])
+    if "/" in spec:
+        project, name = spec.split("/", 1)
+        for r in rooms:
+            if project_of(r) == project and r["name"] == name:
+                return r
+        print(f"Error: room '{spec}' not found.")
+        sys.exit(1)
+    else:
+        matches = [r for r in rooms if r["name"] == spec]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            projects = ", ".join(f"{project_of(r)}/{spec}" for r in matches)
+            print(f"Error: '{spec}' is ambiguous across multiple projects. Use: {projects}")
+            sys.exit(1)
+        print(f"Error: room '{spec}' not found.")
+        sys.exit(1)
+
+
+def human_age(ts: int) -> str:
+    delta = int(time.time()) - ts
+    if delta < 3600:
+        return f"{max(1, delta // 60)}m ago"
+    elif delta < 86400:
+        return f"{delta // 3600}h ago"
+    else:
+        return f"{delta // 86400}d ago"
+
+
+# ---------------------------------------------------------------------------
+# Git helpers
+# ---------------------------------------------------------------------------
+
+def run(cmd: list[str], cwd: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, cwd=cwd, check=check, capture_output=True, text=True)
+
+
+def fetch_repo(repo: str) -> bool:
+    """Fetch origin and return True if successful (i.e. we are online)."""
+    r = run(["git", "fetch", "--quiet", "origin"], cwd=repo, check=False)
+    return r.returncode == 0
+
+
+def detect_default_branch(repo_path: str) -> str:
+    """Return main, master, or whatever HEAD points to on the remote."""
+    try:
+        r = run(["git", "remote", "show", "origin"], cwd=repo_path, check=False)
+        for line in r.stdout.splitlines():
+            m = re.search(r"HEAD branch:\s+(\S+)", line)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    try:
+        r = run(["git", "symbolic-ref", "--short", "HEAD"], cwd=repo_path, check=False)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return "main"
+
+
+def current_branch(worktree_path: str) -> str | None:
+    try:
+        r = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree_path, check=False)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def branch_merged(main_repo: str, branch: str, default_branch: str) -> bool:
+    """Return True if branch is in the merged list of default_branch.
+    Assumes fetch has already been done by the caller."""
+    try:
+        r = run(
+            ["git", "branch", "-r", "--merged", f"origin/{default_branch}"],
+            cwd=main_repo, check=False
+        )
+        merged = [b.strip().removeprefix("origin/") for b in r.stdout.splitlines()]
+        return branch in merged
+    except Exception:
+        return False
+
+
+def last_commit_age(worktree_path: str) -> str:
+    """Return a human-readable age string based on the last commit timestamp."""
+    try:
+        r = run(["git", "log", "-1", "--format=%ct"], cwd=worktree_path, check=False)
+        if r.returncode != 0 or not r.stdout.strip():
+            return "no commits"
+        return human_age(int(r.stdout.strip()))
+    except Exception:
+        return "?"
+
+
+def get_pr_info(main_repo: str, branch: str) -> dict | None:
+    """Return PR info dict {url, number, ci, draft} or None if no open PR."""
+    r = run(
+        ["gh", "pr", "view", branch,
+         "--json", "url,number,state,isDraft,statusCheckRollup"],
+        cwd=main_repo, check=False,
+    )
+    if r.returncode != 0:
+        return None
+    d = json.loads(r.stdout)
+    rollup      = d.get("statusCheckRollup") or []
+    conclusions = {c.get("conclusion") for c in rollup}
+    statuses    = {c.get("status")     for c in rollup}
+    if not rollup:
+        ci = None
+    elif conclusions & {"FAILURE", "ERROR"}:
+        ci = "failing"
+    elif statuses & {"IN_PROGRESS", "QUEUED", "WAITING"}:
+        ci = "pending"
+    else:
+        ci = "passing"
+    return {
+        "url":    d["url"],
+        "number": d["number"],
+        "ci":     ci,
+        "draft":  d.get("isDraft", False),
+    }
+
+
+def osc8(url: str, text: str) -> str:
+    """Wrap text in an OSC 8 terminal hyperlink."""
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def branch_fully_pushed(main_repo: str, branch: str) -> bool:
+    """Return True if the local branch has no commits ahead of its remote.
+    Uses local refs only (assumes fetch has already run)."""
+    r = run(["git", "rev-parse", f"origin/{branch}"], cwd=main_repo, check=False)
+    if r.returncode != 0:
+        return False
+    r = run(["git", "log", f"origin/{branch}..{branch}", "--oneline"],
+            cwd=main_repo, check=False)
+    return r.returncode == 0 and not r.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Remote info — with cache fallback and PR info persistence
+# ---------------------------------------------------------------------------
+
+def get_remote_info(
+    room: dict,
+    branch: str,
+    online: bool,
+    cache: dict,
+) -> tuple[bool, dict | None, bool, dict]:
+    """Return (merged, pr_info, pushed, cache_update).
+
+    pr_info is a dict {url, number, ci, draft} or None.
+    When online: always calls get_pr_info for fresh CI status.
+    When offline: reconstructs pr_info from cached fields.
+    """
+    key            = f"{project_of(room)}/{room['name']}:{branch}"
+    main_repo      = room["main_repo"]
+    default_branch = room.get("default_branch", "main")
+
+    if online:
+        merged  = branch_merged(main_repo, branch, default_branch)
+        pr_info = get_pr_info(main_repo, branch)
+        pushed  = branch_fully_pushed(main_repo, branch) if not merged else False
+        update  = {key: {
+            "merged":    merged,
+            "pushed":    pushed,
+            "pr_url":    pr_info["url"]    if pr_info else None,
+            "pr_number": pr_info["number"] if pr_info else None,
+            "pr_draft":  pr_info["draft"]  if pr_info else False,
+            "ci":        pr_info["ci"]     if pr_info else None,
+        }}
+        return merged, pr_info, pushed, update
+    else:
+        entry   = cache.get(key, {})
+        pr_url  = entry.get("pr_url")
+        pr_info = {
+            "url":    pr_url,
+            "number": entry.get("pr_number"),
+            "ci":     entry.get("ci"),
+            "draft":  entry.get("pr_draft", False),
+        } if pr_url else None
+        return entry.get("merged", False), pr_info, entry.get("pushed", False), {}
+
+
+CI_EMOJI = {"passing": "✅", "failing": "❌", "pending": "🔄"}
+
+
+def format_status(merged: bool, pr_info: dict | None) -> str:
+    """Build the STATUS column value for a non-free room."""
+    pr_link = (
+        osc8(pr_info["url"], f"#{pr_info['number']}")
+        if pr_info and pr_info.get("url") and pr_info.get("number")
+        else None
+    )
+    if merged:
+        pr_part = f"  {pr_link}" if pr_link else ""
+        return f"🟣 merged{pr_part}"
+    label = f"{ORANGE}🔨in-progress{RESET}"
+    if pr_link:
+        draft_mark = " draft" if pr_info.get("draft") else ""
+        ci_mark    = f" {CI_EMOJI[pr_info['ci']]}" if pr_info.get("ci") in CI_EMOJI else ""
+        pr_part    = f"{pr_link}{draft_mark}{ci_mark}"
+    else:
+        pr_part = "no PR"
+    return f"{label}  {pr_part}"
+
+
+# ---------------------------------------------------------------------------
+# Shared: parallel fetch + remote info (used by ls and purge)
+# ---------------------------------------------------------------------------
+
+def parallel_fetch(rooms: list[dict]) -> dict[str, bool]:
+    """Fetch all unique repos in parallel. Returns {repo_path: online}."""
+    unique_repos = list({r["main_repo"] for r in rooms})
+    online_by_repo: dict[str, bool] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(unique_repos))) as pool:
+        future_to_repo = {pool.submit(fetch_repo, repo): repo for repo in unique_repos}
+        for future in as_completed(future_to_repo):
+            repo = future_to_repo[future]
+            online_by_repo[repo] = future.result()
+    return online_by_repo
+
+
+def parallel_room_info(
+    pending: list[tuple[dict, str]],
+    online_by_repo: dict[str, bool],
+    cache: dict,
+) -> dict[str, tuple]:
+    """Compute (merged, pr_info, pushed, age, cache_update) for each pending
+    (room, branch) pair in parallel. Returns {room_name: result}."""
+
+    def _info(room: dict, branch: str):
+        online = online_by_repo[room["main_repo"]]
+        merged, pr_info, pushed, update = get_remote_info(room, branch, online, cache)
+        age = last_commit_age(room["path"])
+        return room["name"], merged, pr_info, pushed, age, update
+
+    results: dict[str, tuple] = {}
+    if not pending:
+        return results
+
+    with ThreadPoolExecutor(max_workers=max(1, len(pending))) as pool:
+        futures = {pool.submit(_info, room, branch): room for room, branch in pending}
+        for future in as_completed(futures):
+            name, merged, pr_info, pushed, age, update = future.result()
+            results[name] = (merged, pr_info, pushed, age, update)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# rooms add
+# ---------------------------------------------------------------------------
+
+def cmd_add(args: list[str]) -> None:
+    if len(args) < 2:
+        print("Usage: rooms add <path-or-url> <room-name> [branch]")
+        sys.exit(1)
+
+    source, room_name = args[0], args[1]
+    base_branch_override = args[2] if len(args) >= 3 else None
+
+    cfg = load_config()
+    rooms_base = expand(cfg.get("rooms_base", DEFAULT_ROOMS_BASE))
+
+    if any(r["name"] == room_name for r in cfg["rooms"]):
+        print(f"Error: a room named '{room_name}' already exists.")
+        sys.exit(1)
+
+    is_url = source.startswith("git@") or source.startswith("https://")
+    if is_url:
+        repo_name = re.sub(r"\.git$", "", source.rstrip("/").split("/")[-1])
+        clone_base = Path.home() / "code"
+        clone_base.mkdir(parents=True, exist_ok=True)
+        main_repo = str(clone_base / repo_name)
+        if not Path(main_repo).exists():
+            print(f"Cloning {source} → {main_repo} …")
+            run(["git", "clone", source, main_repo])
+        else:
+            print(f"Repo already exists at {main_repo}, skipping clone.")
+    else:
+        main_repo = expand(source)
+        if not Path(main_repo).exists():
+            print(f"Error: path '{main_repo}' does not exist.")
+            sys.exit(1)
+
+    default_branch = detect_default_branch(main_repo)
+    base_branch    = base_branch_override or default_branch
+    worktree_path  = str(Path(rooms_base) / room_name)
+
+    print(f"Creating branch '{room_name}' from '{base_branch}' …")
+    r = run(["git", "rev-parse", "--verify", room_name], cwd=main_repo, check=False)
+    if r.returncode != 0:
+        run(["git", "branch", room_name, base_branch], cwd=main_repo)
+    else:
+        print(f"  Branch '{room_name}' already exists, reusing.")
+
+    print(f"Adding worktree at {worktree_path} …")
+    Path(rooms_base).mkdir(parents=True, exist_ok=True)
+    run(["git", "worktree", "add", worktree_path, room_name], cwd=main_repo)
+
+    entry = {
+        "name": room_name,
+        "main_repo": main_repo,
+        "path": worktree_path,
+        "placeholder_branch": room_name,
+        "default_branch": default_branch,
+    }
+    cfg["rooms"].append(entry)
+    save_config(cfg)
+
+    print(f"\n{GREEN}Room '{room_name}' is ready.{RESET}")
+    print(f"  Worktree : {worktree_path}")
+    print(f"  Repo     : {main_repo}")
+    print(f"  Branch   : {room_name}  (placeholder — room is free)")
+
+
+# ---------------------------------------------------------------------------
+# rooms ls
+# ---------------------------------------------------------------------------
+
+def cmd_ls() -> None:
+    cfg   = load_config()
+    rooms = cfg.get("rooms", [])
+
+    if not rooms:
+        print("No rooms configured yet. Use 'rooms add' to create one.")
+        return
+
+    rooms = sorted(rooms, key=lambda r: (Path(r["main_repo"]).name.lower(), r["name"].lower()))
+    cache = load_cache(cfg)
+
+    # Phase 1: fetch all repos in parallel
+    online_by_repo = parallel_fetch(rooms)
+    any_offline    = not all(online_by_repo.values())
+
+    # Classify rooms and collect those needing remote info
+    free_rows: dict[str, tuple] = {}
+    pending:   list[tuple[dict, str]] = []
+    room_branch: dict[str, str] = {}
+
+    for room in rooms:
+        name          = room["name"]
+        worktree_path = room["path"]
+        placeholder   = room.get("placeholder_branch", name)
+
+        if not Path(worktree_path).exists():
+            free_rows[name] = (name, "(missing)", "(missing)", "—", f"{DIM}[missing]{RESET}")
+            continue
+
+        branch = current_branch(worktree_path) or "(unknown)"
+        room_branch[name] = branch
+
+        if branch == placeholder:
+            free_rows[name] = (name, "—", "—", "—", f"{DIM}[free]{RESET}")
+        else:
+            pending.append((room, branch))
+
+    # Phase 2: remote info for all non-free rooms in parallel
+    info_results = parallel_room_info(pending, online_by_repo, cache)
+
+    # Merge cache updates and persist if any online data was fetched
+    cache_updates: dict = {}
+    for merged, pr_info, pushed, age, update in info_results.values():
+        cache_updates.update(update)
+    if cache_updates:
+        cache.update(cache_updates)
+        save_cache(cfg, cache, updated_at=int(time.time()))
+
+    # Build rows in sorted order
+    rows = []
+    for room in rooms:
+        name = room["name"]
+        if name in free_rows:
+            rows.append(free_rows[name])
+        else:
+            branch = room_branch.get(name, "(unknown)")
+            merged, pr_info, pushed, age, _ = info_results.get(name, (False, None, False, "?", {}))
+            pr_url         = pr_info["url"] if pr_info else None
+            branch_display = osc8(pr_url, branch) if pr_url else branch
+            status_str     = format_status(merged, pr_info)
+            rows.append((name, branch, branch_display, age, status_str))
+
+    # Render grouped by project
+    w_name   = max(len("ROOM"),        max(len(r[0]) for r in rows))
+    w_branch = max(len("BRANCH"),      max(len(r[1]) for r in rows))
+    w_age    = max(len("LAST COMMIT"), max(len(r[3]) for r in rows))
+    col_header = f"  {'ROOM':<{w_name}}  {'BRANCH':<{w_branch}}  {'LAST COMMIT':<{w_age}}  STATUS"
+    separator  = "  " + "-" * (w_name + w_branch + w_age + 20)
+
+    rows_with_project = [(Path(room["main_repo"]).name, row) for room, row in zip(rooms, rows)]
+    current_project = None
+    for project, (name, branch, branch_display, age, status_str) in rows_with_project:
+        if project != current_project:
+            if current_project is not None:
+                print()
+            print(f"{BOLD}{project}{RESET}")
+            print(col_header)
+            print(separator)
+            current_project = project
+        padding = " " * (w_branch - len(branch))
+        print(f"  {name:<{w_name}}  {branch_display}{padding}  {age:<{w_age}}  {status_str}")
+
+    if any_offline:
+        cached_at = cfg.get("cache_updated_at")
+        age_str = human_age(cached_at) if cached_at else "unknown"
+        print(f"\n{DIM}offline — cached data from {age_str}{RESET}")
+
+
+# ---------------------------------------------------------------------------
+# rooms free
+# ---------------------------------------------------------------------------
+
+def cmd_free(args: list[str]) -> None:
+    if not args:
+        print("Usage: rooms free <project/room>")
+        sys.exit(1)
+
+    cfg  = load_config()
+    room = resolve_room(cfg, args[0])
+
+    worktree_path = room["path"]
+    placeholder   = room.get("placeholder_branch", room["name"])
+    branch        = current_branch(worktree_path)
+
+    if branch == placeholder:
+        print(f"Room '{room['name']}' is already on the placeholder branch '{placeholder}'.")
+        return
+
+    r = run(["git", "status", "--porcelain"], cwd=worktree_path, check=False)
+    if r.stdout.strip():
+        print(f"Error: room '{room['name']}' has uncommitted changes.")
+        print("Commit, stash, or discard them before freeing the room.")
+        sys.exit(1)
+
+    print(f"Switching '{room['name']}' from '{branch}' → '{placeholder}' …")
+    result = run(["git", "checkout", placeholder], cwd=worktree_path, check=False)
+    if result.returncode != 0:
+        print(f"Error: could not switch to '{placeholder}'.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    print(f"{GREEN}Room '{room['name']}' is now free.{RESET}")
+
+
+# ---------------------------------------------------------------------------
+# rooms move
+# ---------------------------------------------------------------------------
+
+def cmd_move(args: list[str]) -> None:
+    if len(args) < 2:
+        print("Usage: rooms move <project/source-room> <project/target-room>")
+        sys.exit(1)
+
+    cfg = load_config()
+    src = resolve_room(cfg, args[0])
+    dst = resolve_room(cfg, args[1])
+
+    if src is dst:
+        print("Error: source and target rooms must be different.")
+        sys.exit(1)
+
+    src_name        = src["name"]
+    dst_name        = dst["name"]
+    src_placeholder = src.get("placeholder_branch", src_name)
+    dst_placeholder = dst.get("placeholder_branch", dst_name)
+    src_branch      = current_branch(src["path"])
+    dst_branch      = current_branch(dst["path"])
+
+    if src_branch == src_placeholder:
+        print(f"Error: source room '{src_name}' is already free — nothing to move.")
+        sys.exit(1)
+    if dst_branch != dst_placeholder:
+        print(f"Error: target room '{dst_name}' is not free (currently on '{dst_branch}').")
+        print(f"Free it first with: rooms free {project_of(dst)}/{dst_name}")
+        sys.exit(1)
+
+    r = run(["git", "status", "--porcelain"], cwd=src["path"], check=False)
+    if r.stdout.strip():
+        print(f"Error: source room '{src_name}' has uncommitted changes.")
+        print("Commit, stash, or discard them before moving.")
+        sys.exit(1)
+
+    branch_to_move = src_branch
+    print(f"Moving '{branch_to_move}'  {src_name} → {dst_name} …")
+
+    result = run(["git", "checkout", src_placeholder], cwd=src["path"], check=False)
+    if result.returncode != 0:
+        print(f"Error: could not restore placeholder branch in '{src_name}'.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    result = run(["git", "checkout", branch_to_move], cwd=dst["path"], check=False)
+    if result.returncode != 0:
+        run(["git", "checkout", branch_to_move], cwd=src["path"], check=False)
+        print(f"Error: could not check out '{branch_to_move}' in '{dst_name}'.")
+        print(result.stderr.strip())
+        print(f"Rolled back: '{src_name}' restored to '{branch_to_move}'.")
+        sys.exit(1)
+
+    print(f"{GREEN}Done.{RESET}")
+    print(f"  {dst_name}  →  {branch_to_move}")
+    print(f"  {src_name}  →  {src_placeholder}  (free)")
+
+
+# ---------------------------------------------------------------------------
+# rooms purge
+# ---------------------------------------------------------------------------
+
+def cmd_purge() -> None:
+    cfg   = load_config()
+    rooms = cfg.get("rooms", [])
+
+    if not rooms:
+        print("No rooms configured yet.")
+        return
+
+    rooms = sorted(rooms, key=lambda r: (Path(r["main_repo"]).name.lower(), r["name"].lower()))
+    cache = load_cache(cfg)
+
+    # Phase 1: fetch all repos in parallel
+    online_by_repo = parallel_fetch(rooms)
+    any_offline    = not all(online_by_repo.values())
+
+    print("Scanning rooms…")
+    if any_offline:
+        cached_at = cfg.get("cache_updated_at")
+        age_str = human_age(cached_at) if cached_at else "unknown"
+        print(f"{DIM}offline — using cached data from {age_str}{RESET}")
+
+    # Collect non-free rooms for parallel remote info
+    pending: list[tuple[dict, str]] = []
+    for room in rooms:
+        placeholder = room.get("placeholder_branch", room["name"])
+        if not Path(room["path"]).exists():
+            continue
+        branch = current_branch(room["path"])
+        if branch and branch != placeholder:
+            pending.append((room, branch))
+
+    # Phase 2: remote info in parallel
+    info_results = parallel_room_info(pending, online_by_repo, cache)
+
+    # Persist cache updates
+    cache_updates: dict = {}
+    for merged, pr_info, pushed, age, update in info_results.values():
+        cache_updates.update(update)
+    if cache_updates:
+        cache.update(cache_updates)
+        save_cache(cfg, cache, updated_at=int(time.time()))
+
+    # Identify candidates
+    candidates = []
+    for room, branch in pending:
+        name = room["name"]
+        merged, pr_info, pushed, age, _ = info_results.get(name, (False, None, False, "?", {}))
+        if merged:
+            reason = f"{GREEN}merged{RESET}"
+        elif pushed:
+            reason = f"{ORANGE}fully pushed{RESET}"
+        else:
+            continue
+        candidates.append((room, branch, reason))
+
+    if not candidates:
+        print("Nothing to purge — all busy rooms have unpushed local commits.")
+        return
+
+    w_name   = max(len("ROOM"),   max(len(c[0]["name"]) for c in candidates))
+    w_branch = max(len("BRANCH"), max(len(c[1])          for c in candidates))
+    print()
+    print(f"{BOLD}{'ROOM':<{w_name}}  {'BRANCH':<{w_branch}}  REASON{RESET}")
+    print("-" * (w_name + w_branch + 18))
+    for room, branch, reason in candidates:
+        print(f"{room['name']:<{w_name}}  {branch:<{w_branch}}  {reason}")
+
+    print()
+    answer = input("Purge these rooms? [y/N] ").strip().lower()
+    if answer != "y":
+        print("Aborted.")
+        return
+
+    print()
+    for room, branch, reason in candidates:
+        name          = room["name"]
+        worktree_path = room["path"]
+        main_repo     = room["main_repo"]
+        placeholder   = room.get("placeholder_branch", name)
+
+        r = run(["git", "status", "--porcelain"], cwd=worktree_path, check=False)
+        if r.stdout.strip():
+            print(f"  {name}: skipping — has uncommitted changes.")
+            continue
+
+        r = run(["git", "checkout", placeholder], cwd=worktree_path, check=False)
+        if r.returncode != 0:
+            print(f"  {name}: could not switch to placeholder — {r.stderr.strip()}")
+            continue
+
+        r = run(["git", "branch", "-D", branch], cwd=main_repo, check=False)
+        if r.returncode != 0:
+            print(f"  {name}: freed but could not remove local branch — {r.stderr.strip()}")
+            continue
+
+        print(f"  {GREEN}{name}{RESET}  freed  (deleted branch '{branch}')")
+
+    print()
+    print("Done.")
+
+
+# ---------------------------------------------------------------------------
+# rooms occupy  (logic; called via shell wrapper so the shell can cd)
+# ---------------------------------------------------------------------------
+
+def _do_occupy(args: list[str], silent: bool = False) -> str:
+    """Validate, optionally checkout a branch, and return the worktree path."""
+    if not args:
+        print("Usage: rooms occupy <project/room> [branch]")
+        sys.exit(1)
+
+    spec   = args[0]
+    branch = args[1] if len(args) >= 2 else None
+
+    cfg           = load_config()
+    room          = resolve_room(cfg, spec)
+    placeholder   = room.get("placeholder_branch", room["name"])
+    worktree_path = room["path"]
+    current       = current_branch(worktree_path)
+
+    if current != placeholder:
+        room_spec = f"{project_of(room)}/{room['name']}"
+        print(f"Error: room '{room_spec}' is occupied (currently on '{current}').")
+        print(f"Free it first with: rooms free {room_spec}")
+        sys.exit(1)
+
+    if branch:
+        result = run(["git", "checkout", branch], cwd=worktree_path, check=False)
+        if result.returncode != 0:
+            print(f"Error: could not check out '{branch}' in '{room['name']}'.")
+            print(result.stderr.strip())
+            sys.exit(1)
+        if not silent:
+            print(f"Checked out '{branch}' in room '{room['name']}'.")
+
+    return worktree_path
+
+
+def cmd_occupy(args: list[str]) -> None:
+    """Public command: prints a user-facing message. cd is done by shell wrapper."""
+    path = _do_occupy(args, silent=False)
+    if not args[1:]:
+        print(f"Room '{args[0]}' is ready.")
+    print(path)
+
+
+def cmd_occupy_internal(args: list[str]) -> None:
+    """Internal: prints only the path (consumed by the shell wrapper)."""
+    print(_do_occupy(args, silent=True))
+
+
+# ---------------------------------------------------------------------------
+# rooms config
+# ---------------------------------------------------------------------------
+
+def cmd_config(args: list[str]) -> None:
+    if len(args) < 2 or args[0] != "set-base-path":
+        print("Usage: rooms config set-base-path <path>")
+        sys.exit(1)
+
+    new_base = expand(args[1])
+    cfg = load_config()
+    old_base = cfg.get("rooms_base", DEFAULT_ROOMS_BASE)
+    cfg["rooms_base"] = new_base
+    save_config(cfg)
+    print(f"rooms_base: {old_base} → {new_base}")
+    print(f"Config saved to {CONFIG_PATH}")
+
+
+# ---------------------------------------------------------------------------
+# Completion helpers
+# ---------------------------------------------------------------------------
+
+def cmd_names() -> None:
+    cfg = load_config()
+    for r in cfg.get("rooms", []):
+        print(f"{project_of(r)}/{r['name']}")
+
+
+def cmd_branches(args: list[str]) -> None:
+    if not args:
+        sys.exit(1)
+    cfg  = load_config()
+    room = resolve_room(cfg, args[0])
+    try:
+        r = run(["git", "branch", "--format=%(refname:short)"], cwd=room["main_repo"], check=False)
+        for line in r.stdout.splitlines():
+            b = line.strip()
+            if b:
+                print(b)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+def usage() -> None:
+    print("Usage:")
+    print("  rooms add <path-or-url> <room-name> [branch]")
+    print("  rooms ls")
+    print("  rooms free <project/room>")
+    print("  rooms move <project/source-room> <project/target-room>")
+    print("  rooms occupy <project/room> [branch]")
+    print("  rooms purge")
+    print("  rooms config set-base-path <path>")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(1)
+
+    command = sys.argv[1]
+
+    if command == "add":
+        cmd_add(sys.argv[2:])
+    elif command == "ls":
+        cmd_ls()
+    elif command == "free":
+        cmd_free(sys.argv[2:])
+    elif command == "move":
+        cmd_move(sys.argv[2:])
+    elif command == "occupy":
+        cmd_occupy(sys.argv[2:])
+    elif command == "purge":
+        cmd_purge()
+    elif command == "config":
+        cmd_config(sys.argv[2:])
+    elif command == "_occupy":
+        cmd_occupy_internal(sys.argv[2:])
+    elif command == "_names":
+        cmd_names()
+    elif command == "_branches":
+        cmd_branches(sys.argv[2:])
+    else:
+        print(f"Unknown command: '{command}'")
+        usage()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

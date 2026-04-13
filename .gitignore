@@ -1,0 +1,9 @@
+*.json
+*.pyc
+__pycache__/
+.DS_Store
+.env
+.venv/
+.coverage
+coverage.xml
+.pytest_cache/
