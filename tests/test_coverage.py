@@ -717,7 +717,7 @@ class TestMain:
     def test_main_dispatches_purge(self, rooms, monkeypatch):
         called = []
         monkeypatch.setattr(sys, "argv", ["rooms", "purge"])
-        monkeypatch.setattr(rooms, "cmd_purge", lambda: called.append("purge"))
+        monkeypatch.setattr(rooms, "cmd_purge", lambda *_: called.append("purge"))
         rooms.main()
         assert "purge" in called
 

@@ -8,7 +8,7 @@ Usage:
   rooms free <project/room>
   rooms move <project/source-room> <project/target-room>
   rooms occupy <project/room> [branch]
-  rooms purge
+  rooms purge [--merged]
   rooms config set-base-path <path>
 
 Internal (used by shell wrapper / completion):
@@ -594,7 +594,8 @@ def cmd_move(args: list[str]) -> None:
 # rooms purge
 # ---------------------------------------------------------------------------
 
-def cmd_purge() -> None:
+def cmd_purge(args: list[str] | None = None) -> None:
+    merged_only = "--merged" in (args or [])
     cfg   = load_config()
     rooms = cfg.get("rooms", [])
 
@@ -643,14 +644,17 @@ def cmd_purge() -> None:
         merged, pr_info, pushed, age, _ = info_results.get(name, (False, None, False, "?", {}))
         if merged:
             reason = f"{GREEN}merged{RESET}"
-        elif pushed:
+        elif pushed and not merged_only:
             reason = f"{ORANGE}fully pushed{RESET}"
         else:
             continue
         candidates.append((room, branch, reason))
 
     if not candidates:
-        print("Nothing to purge — all busy rooms have unpushed local commits.")
+        if merged_only:
+            print("Nothing to purge — no rooms have a merged PR.")
+        else:
+            print("Nothing to purge — all busy rooms have unpushed local commits.")
         return
 
     w_name   = max(len("ROOM"),   max(len(c[0]["name"]) for c in candidates))
@@ -799,7 +803,7 @@ def usage() -> None:
     print("  rooms free <project/room>")
     print("  rooms move <project/source-room> <project/target-room>")
     print("  rooms occupy <project/room> [branch]")
-    print("  rooms purge")
+    print("  rooms purge [--merged]")
     print("  rooms config set-base-path <path>")
 
 
@@ -821,7 +825,7 @@ def main() -> None:
     elif command == "occupy":
         cmd_occupy(sys.argv[2:])
     elif command == "purge":
-        cmd_purge()
+        cmd_purge(sys.argv[2:])
     elif command == "config":
         cmd_config(sys.argv[2:])
     elif command == "_occupy":

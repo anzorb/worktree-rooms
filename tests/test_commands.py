@@ -315,6 +315,49 @@ class TestCmdPurge:
         out = capsys.readouterr().out
         assert "freed" in out
 
+    def test_merged_only_excludes_pushed_rooms(self, rooms, monkeypatch, tmp_path, capsys):
+        """--merged skips rooms that are only fully-pushed (not merged)."""
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch", lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (False, None, True, "2h ago", {})  # pushed but NOT merged
+        })
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+        }))
+
+        rooms.cmd_purge(["--merged"])
+        out = capsys.readouterr().out
+        assert "Nothing to purge" in out
+        assert "merged PR" in out
+
+    def test_merged_only_includes_merged_rooms(self, rooms, monkeypatch, tmp_path, capsys):
+        """--merged still purges rooms whose PR was merged."""
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch", lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (True, None, False, "2h ago", {})  # merged
+        })
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+            ("git", "status", "--porcelain"):     (0, "", ""),
+            ("git", "checkout",):                 (0, "", ""),
+            ("git", "branch", "-D"):              (0, "", ""),
+        }))
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+
+        rooms.cmd_purge(["--merged"])
+        out = capsys.readouterr().out
+        assert "freed" in out
+
 
 # ---------------------------------------------------------------------------
 # cmd_config
