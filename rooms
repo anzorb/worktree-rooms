@@ -200,6 +200,7 @@ def get_pr_info(main_repo: str, branch: str) -> dict | None:
         "number": d["number"],
         "ci":     ci,
         "draft":  d.get("isDraft", False),
+        "state":  d.get("state", "OPEN"),
     }
 
 
@@ -242,6 +243,10 @@ def get_remote_info(
     if online:
         merged  = branch_merged(main_repo, branch, default_branch)
         pr_info = get_pr_info(main_repo, branch)
+        # A PR in MERGED state means the branch was merged, even if the remote
+        # ref was deleted (making branch_merged return False).
+        if pr_info and pr_info.get("state") == "MERGED":
+            merged = True
         pushed  = branch_fully_pushed(main_repo, branch) if not merged else False
         update  = {key: {
             "merged":    merged,

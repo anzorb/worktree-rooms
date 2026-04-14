@@ -192,3 +192,10 @@ def test_get_pr_info_draft(rooms, monkeypatch):
         ("gh", "pr", "view"): (0, _gh_response(is_draft=True), ""),
     }))
     assert rooms.get_pr_info("/repo", "feat")["draft"] is True
+
+
+def test_get_pr_info_returns_state(rooms, monkeypatch):
+    monkeypatch.setattr(rooms, "run", make_run({
+        ("gh", "pr", "view"): (0, _gh_response(state="MERGED"), ""),
+    }))
+    assert rooms.get_pr_info("/repo", "feat")["state"] == "MERGED"

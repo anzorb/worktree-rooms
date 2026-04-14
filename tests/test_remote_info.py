@@ -9,7 +9,8 @@ from conftest import make_run, make_room, make_cfg
 # Helpers
 # ---------------------------------------------------------------------------
 
-PR_INFO = {"url": "https://github.com/org/repo/pull/42", "number": 42, "ci": "passing", "draft": False}
+PR_INFO = {"url": "https://github.com/org/repo/pull/42", "number": 42, "ci": "passing", "draft": False, "state": "OPEN"}
+PR_INFO_MERGED = {**PR_INFO, "state": "MERGED"}
 PR_INFO_DRAFT = {**PR_INFO, "draft": True}
 PR_INFO_FAILING = {**PR_INFO, "ci": "failing"}
 PR_INFO_PENDING = {**PR_INFO, "ci": "pending"}
@@ -115,6 +116,23 @@ def test_get_remote_info_online_cache_update_contains_all_fields(rooms, monkeypa
     assert entry["pr_draft"] is True
     assert entry["ci"] == "passing"
     assert entry["pr_number"] == 42
+
+
+def test_get_remote_info_merged_pr_overrides_branch_merged(rooms, monkeypatch):
+    """If gh reports the PR as MERGED, treat the room as merged even when
+    branch_merged (git-based) returns False (e.g. remote branch was deleted)."""
+    room = make_room(name="room-1", repo="/repo/myproject")
+
+    monkeypatch.setattr(rooms, "branch_merged", lambda *_: False)
+    monkeypatch.setattr(rooms, "get_pr_info", lambda *_: PR_INFO_MERGED)
+    monkeypatch.setattr(rooms, "branch_fully_pushed", lambda *_: False)
+
+    merged, pr_info, pushed, update = rooms.get_remote_info(room, "feat", True, {})
+
+    assert merged is True
+    assert update["myproject/room-1:feat"]["merged"] is True
+    # pushed is skipped when merged
+    assert pushed is False
 
 
 # ---------------------------------------------------------------------------
