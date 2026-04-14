@@ -748,3 +748,11 @@ class TestMain:
         monkeypatch.setattr(rooms, "cmd_branches", lambda args: called.append(args))
         rooms.main()
         assert called
+
+    def test_main_help_flag_exits_cleanly(self, rooms, monkeypatch, capsys):
+        for flag in ("-h", "--help"):
+            monkeypatch.setattr(sys, "argv", ["rooms", flag])
+            with pytest.raises(SystemExit) as exc:
+                rooms.main()
+            assert exc.value.code == 0
+            assert "rooms add" in capsys.readouterr().out

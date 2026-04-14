@@ -1,0 +1,129 @@
+# worktree-rooms
+
+> A git worktree manager with a hospital-room metaphor. Rooms are named worktrees (e.g. `room-1`, `emergency-1`). Each room has a placeholder branch that signals it is free. Assigning real work to a room means checking out a feature/fix branch in it.
+
+Source: https://github.com/anzorb/worktree-rooms
+Install: `curl -fsSL https://raw.githubusercontent.com/anzorb/worktree-rooms/main/install.sh | bash`
+Config: `~/.config/rooms/config.json`
+Help: `rooms --help`
+
+## Core concepts
+
+- **room** — a git worktree directory with a stable name (e.g. `room-1`).
+- **placeholder branch** — a branch with the same name as the room; signals the room is free.
+- **project** — the basename of the main repo a worktree belongs to (e.g. `myproject`).
+- **project/room spec** — the canonical way to address a room when multiple projects exist (e.g. `myproject/room-1`). Bare room names are accepted when unambiguous.
+- **free** — room is on its placeholder branch, available for new work.
+- **in-progress** — room has a real branch checked out.
+- **merged** — the branch's PR was merged into the default branch.
+
+## Commands
+
+### rooms add <path-or-url> <room-name> [branch]
+
+Create a new room backed by a git worktree.
+
+- `path-or-url`: local repo path **or** a GitHub SSH URL (`git@github.com:org/repo.git`). If a URL is given, the repo is cloned to `~/code/<repo-name>` first.
+- `room-name`: name for the room and its placeholder branch.
+- `branch` (optional): base branch to create the placeholder from. Defaults to the repo's default branch.
+
+```
+rooms add ~/dev/myproject room-1
+rooms add git@github.com:org/myproject.git emergency-1 main
+```
+
+### rooms ls
+
+List all rooms grouped by project. Shows room name, current branch, last commit age, and status.
+
+Status values:
+- `[free]` — on placeholder branch
+- `🔨in-progress` — active branch checked out
+- `🟣 merged` — branch merged into default branch
+
+PR numbers are shown as clickable OSC 8 hyperlinks in supported terminals. CI status emojis: ✅ passing · ❌ failing · 🔄 in progress.
+
+Works offline — falls back to cached data with a "last updated Xh ago" note.
+
+### rooms occupy <project/room> [branch]
+
+Enter a room and optionally check out a branch. **This changes the caller's shell working directory** (implemented via a shell wrapper function). Fails if the room is already occupied.
+
+```
+rooms occupy myproject/room-1
+rooms occupy myproject/room-1 feature/my-feature
+```
+
+Tab completion is available for both `project/room` specs and branch names.
+
+### rooms free <project/room>
+
+Return a room to its placeholder branch, making it available again. Fails if the room has uncommitted changes.
+
+```
+rooms free myproject/room-2
+```
+
+### rooms move <project/source-room> <project/target-room>
+
+Move the active branch from `source-room` to `target-room`. `target-room` must be free. `source-room` must have no uncommitted changes and must not already be on its placeholder branch.
+
+Internally: frees the source first (to release the git branch lock), then checks out the branch in the target. Rolls back the source if the target checkout fails.
+
+```
+rooms move myproject/room-2 myproject/emergency-1
+```
+
+### rooms purge [--merged]
+
+Scan occupied rooms and list those whose branch is safe to clean up:
+- **merged** — PR was merged into the default branch
+- **fully pushed** — all local commits pushed to remote (no unmerged local work)
+
+`--merged` restricts candidates to merged PRs only (skips fully-pushed rooms).
+
+Shows a table and prompts for confirmation (default: No) before making any changes. Frees the room and deletes the local branch on confirmation.
+
+```
+rooms purge
+rooms purge --merged
+```
+
+### rooms config set-base-path <path>
+
+Set the directory where new rooms (worktrees) are created.
+
+```
+rooms config set-base-path ~/dev/rooms
+```
+
+Updates `rooms_base` in `~/.config/rooms/config.json`. Does not move existing worktrees.
+
+## Configuration file
+
+Location: `~/.config/rooms/config.json`
+
+```json
+{
+  "rooms_base": "~/rooms",
+  "rooms": [
+    {
+      "name": "room-1",
+      "main_repo": "/Users/you/dev/myproject",
+      "path": "/Users/you/rooms/room-1",
+      "placeholder_branch": "room-1",
+      "default_branch": "main"
+    }
+  ]
+}
+```
+
+## Shell integration
+
+The `rooms occupy` command requires a shell function wrapper (installed automatically) to change the parent shell's working directory. Completions for `project/room` specs and branch names are registered for zsh (`compdef`), bash (`complete`), and fish.
+
+## Dependencies
+
+- Python 3.10+
+- git
+- gh CLI (optional — needed for PR and CI status in `rooms ls`)

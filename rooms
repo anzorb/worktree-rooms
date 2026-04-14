@@ -814,7 +814,10 @@ def main() -> None:
 
     command = sys.argv[1]
 
-    if command == "add":
+    if command in ("-h", "--help"):
+        usage()
+        sys.exit(0)
+    elif command == "add":
         cmd_add(sys.argv[2:])
     elif command == "ls":
         cmd_ls()
