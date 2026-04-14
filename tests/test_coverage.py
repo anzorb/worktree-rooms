@@ -321,7 +321,7 @@ class TestCmdLs:
         worktree.mkdir()
         room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
         pr_info = {"url": "https://github.com/org/repo/pull/42", "number": 42,
-                   "ci": "passing", "draft": False}
+                   "ci": "passing", "draft": False, "title": "Fix the thing"}
         monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
         monkeypatch.setattr(rooms, "save_config", lambda _: None)
         monkeypatch.setattr(rooms, "parallel_fetch", lambda _: {"/repo/myproject": True})

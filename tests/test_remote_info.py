@@ -9,7 +9,7 @@ from conftest import make_run, make_room, make_cfg
 # Helpers
 # ---------------------------------------------------------------------------
 
-PR_INFO = {"url": "https://github.com/org/repo/pull/42", "number": 42, "ci": "passing", "draft": False, "state": "OPEN"}
+PR_INFO = {"url": "https://github.com/org/repo/pull/42", "number": 42, "ci": "passing", "draft": False, "state": "OPEN", "title": "Fix the thing"}
 PR_INFO_MERGED = {**PR_INFO, "state": "MERGED"}
 PR_INFO_DRAFT = {**PR_INFO, "draft": True}
 PR_INFO_FAILING = {**PR_INFO, "ci": "failing"}
@@ -116,6 +116,7 @@ def test_get_remote_info_online_cache_update_contains_all_fields(rooms, monkeypa
     assert entry["pr_draft"] is True
     assert entry["ci"] == "passing"
     assert entry["pr_number"] == 42
+    assert entry["pr_title"] == PR_INFO_DRAFT["title"]
 
 
 def test_get_remote_info_merged_pr_overrides_branch_merged(rooms, monkeypatch):
@@ -149,6 +150,7 @@ def test_get_remote_info_offline_reads_cache(rooms, monkeypatch):
             "pr_number": 42,
             "pr_draft": False,
             "ci": "passing",
+            "pr_title": "Fix the thing",
         }
     }
 
@@ -158,6 +160,7 @@ def test_get_remote_info_offline_reads_cache(rooms, monkeypatch):
     assert pushed is True
     assert pr_info["number"] == 42
     assert pr_info["ci"] == "passing"
+    assert pr_info["title"] == "Fix the thing"
     assert update == {}  # no cache updates when offline
 
 

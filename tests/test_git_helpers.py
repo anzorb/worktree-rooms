@@ -128,13 +128,14 @@ def test_branch_fully_pushed_clean(rooms, monkeypatch):
 # get_pr_info — CI status parsing
 # ---------------------------------------------------------------------------
 
-def _gh_response(state="OPEN", is_draft=False, rollup=None):
+def _gh_response(state="OPEN", is_draft=False, rollup=None, title="Fix the thing"):
     return json.dumps({
         "url": "https://github.com/org/repo/pull/42",
         "number": 42,
         "state": state,
         "isDraft": is_draft,
         "statusCheckRollup": rollup or [],
+        "title": title,
     })
 
 
@@ -153,6 +154,7 @@ def test_get_pr_info_no_rollup_ci_is_none(rooms, monkeypatch):
     assert info["ci"] is None
     assert info["number"] == 42
     assert info["draft"] is False
+    assert info["title"] == "Fix the thing"
 
 
 def test_get_pr_info_ci_failing(rooms, monkeypatch):
