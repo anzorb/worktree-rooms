@@ -20,7 +20,7 @@ function rooms() {
 
 function _rooms_complete() {
   local -a commands
-  commands=(add ls free move occupy purge)
+  commands=(add ls free remove move occupy purge)
 
   if (( CURRENT == 2 )); then
     _describe 'command' commands
@@ -42,7 +42,7 @@ function _rooms_complete() {
         _describe 'branch' branches
       fi
       ;;
-    free|move)
+    free|remove|move)
       local -a names
       names=(${(f)"$(command rooms _names 2>/dev/null)"})
       compset -P '*/'

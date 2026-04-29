@@ -27,19 +27,21 @@ end
 complete -c rooms -f
 
 # Subcommands
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "add"    -d "Add a new room"
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "ls"     -d "List all rooms"
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "free"   -d "Free a room"
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
+  -a "remove" -d "Remove a free room"
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "move"   -d "Move a branch between rooms"
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "occupy" -d "Enter a room and optionally check out a branch"
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "purge"  -d "Purge merged/pushed rooms"
-complete -c rooms -n "not __fish_seen_subcommand_from add ls free move occupy purge config" \
+complete -c rooms -n "not __fish_seen_subcommand_from add ls free remove move occupy purge config" \
   -a "config" -d "Configure rooms settings"
 
 # Helper: true when we're on the first argument after the subcommand
@@ -53,8 +55,8 @@ function __rooms_on_branch_arg
   __fish_seen_subcommand_from occupy && test (count $tokens) -ge 3
 end
 
-# Room name completions for free / move / occupy (first arg)
-complete -c rooms -n "__fish_seen_subcommand_from free move occupy; and __rooms_on_first_arg" \
+# Room name completions for free / remove / move / occupy (first arg)
+complete -c rooms -n "__fish_seen_subcommand_from free remove move occupy; and __rooms_on_first_arg" \
   -a "(command rooms _names 2>/dev/null)"
 
 # Branch completions for occupy (second arg)

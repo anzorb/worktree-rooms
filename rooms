@@ -6,6 +6,7 @@ Usage:
   rooms add <path-or-url> <room-name> [branch]
   rooms ls
   rooms free <project/room>
+  rooms remove <project/room>
   rooms move <project/source-room> <project/target-room>
   rooms occupy <project/room> [branch]
   rooms purge [--merged]
@@ -596,6 +597,40 @@ def cmd_move(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# rooms remove
+# ---------------------------------------------------------------------------
+
+def cmd_remove(args: list[str]) -> None:
+    if not args:
+        print("Usage: rooms remove <project/room>")
+        sys.exit(1)
+
+    cfg  = load_config()
+    room = resolve_room(cfg, args[0])
+
+    placeholder = room.get("placeholder_branch", room["name"])
+    branch      = current_branch(room["path"])
+
+    if branch != placeholder:
+        print(f"Error: room '{room['name']}' is occupied (branch '{branch}').")
+        print(f"Free it first with: rooms free {args[0]}")
+        sys.exit(1)
+
+    result = run(["git", "worktree", "remove", room["path"]], cwd=room["main_repo"], check=False)
+    if result.returncode != 0:
+        print(f"Error: could not remove worktree for '{room['name']}'.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    run(["git", "branch", "-D", placeholder], cwd=room["main_repo"])
+
+    cfg["rooms"] = [r for r in cfg["rooms"] if r["name"] != room["name"]]
+    save_config(cfg)
+
+    print(f"{GREEN}Room '{room['name']}' removed.{RESET}")
+
+
+# ---------------------------------------------------------------------------
 # rooms purge
 # ---------------------------------------------------------------------------
 
@@ -806,6 +841,7 @@ def usage() -> None:
     print("  rooms add <path-or-url> <room-name> [branch]")
     print("  rooms ls")
     print("  rooms free <project/room>")
+    print("  rooms remove <project/room>")
     print("  rooms move <project/source-room> <project/target-room>")
     print("  rooms occupy <project/room> [branch]")
     print("  rooms purge [--merged]")
@@ -828,6 +864,8 @@ def main() -> None:
         cmd_ls()
     elif command == "free":
         cmd_free(sys.argv[2:])
+    elif command == "remove":
+        cmd_remove(sys.argv[2:])
     elif command == "move":
         cmd_move(sys.argv[2:])
     elif command == "occupy":

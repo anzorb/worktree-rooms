@@ -1,4 +1,4 @@
-"""Tests for rooms commands: cmd_free, cmd_move, _do_occupy, cmd_purge, cmd_config."""
+"""Tests for rooms commands: cmd_free, cmd_move, cmd_remove, _do_occupy, cmd_purge, cmd_config."""
 
 import pytest
 
@@ -78,6 +78,73 @@ class TestCmdFree:
         }))
         with pytest.raises(SystemExit):
             rooms.cmd_free(["myproject/room-1"])
+
+
+# ---------------------------------------------------------------------------
+# cmd_remove
+# ---------------------------------------------------------------------------
+
+class TestCmdRemove:
+    def _cfg(self, worktree_path):
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree_path))
+        return make_cfg(room)
+
+    def test_no_args_exits(self, rooms):
+        with pytest.raises(SystemExit):
+            rooms.cmd_remove([])
+
+    def test_room_not_found_exits(self, rooms, monkeypatch):
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg())
+        with pytest.raises(SystemExit):
+            rooms.cmd_remove(["myproject/ghost"])
+
+    def test_occupied_room_exits(self, rooms, monkeypatch, tmp_path, capsys):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        monkeypatch.setattr(rooms, "load_config", lambda: self._cfg(worktree))
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+        }))
+        with pytest.raises(SystemExit):
+            rooms.cmd_remove(["myproject/room-1"])
+        assert "Free it first" in capsys.readouterr().out
+
+    def test_worktree_remove_failure_exits(self, rooms, monkeypatch, tmp_path):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        monkeypatch.setattr(rooms, "load_config", lambda: self._cfg(worktree))
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "room-1\n", ""),
+            ("git", "worktree", "remove"):        (1, "", "fatal: error"),
+        }))
+        with pytest.raises(SystemExit):
+            rooms.cmd_remove(["myproject/room-1"])
+
+    def test_success_removes_worktree_branch_and_config(self, rooms, monkeypatch, tmp_path, capsys):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        cfg = self._cfg(worktree)
+        saved = {}
+        monkeypatch.setattr(rooms, "load_config", lambda: cfg)
+        monkeypatch.setattr(rooms, "save_config", lambda c: saved.update(c))
+
+        calls = []
+        def capturing_run(cmd, cwd=None, check=True):
+            calls.append(cmd)
+            return make_run({
+                ("git", "rev-parse", "--abbrev-ref"): (0, "room-1\n", ""),
+                ("git", "worktree", "remove"):        (0, "", ""),
+                ("git", "branch", "-D"):              (0, "", ""),
+            })(cmd, cwd=cwd, check=check)
+        monkeypatch.setattr(rooms, "run", capturing_run)
+
+        rooms.cmd_remove(["myproject/room-1"])
+
+        out = capsys.readouterr().out
+        assert "removed" in out
+        assert any("worktree" in c and "remove" in c for c in calls)
+        assert any("branch" in c and "-D" in c for c in calls)
+        assert saved.get("rooms") == []
 
 
 # ---------------------------------------------------------------------------

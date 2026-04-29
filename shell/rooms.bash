@@ -23,7 +23,7 @@ _rooms_complete() {
   local cmd="${COMP_WORDS[1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "add ls free move occupy purge config" -- "$cur"))
+    COMPREPLY=($(compgen -W "add ls free remove move occupy purge config" -- "$cur"))
     return
   fi
 
@@ -39,7 +39,7 @@ _rooms_complete() {
         COMPREPLY=($(compgen -W "$branches" -- "$cur"))
       fi
       ;;
-    free|move)
+    free|move|remove)
       local names
       names=$(command rooms _names 2>/dev/null)
       COMPREPLY=($(compgen -W "$names" -- "$cur"))

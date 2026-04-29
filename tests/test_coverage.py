@@ -693,6 +693,13 @@ class TestMain:
         rooms.main()
         assert called[0] == ["myproject/room-1"]
 
+    def test_main_dispatches_remove(self, rooms, monkeypatch):
+        called = []
+        monkeypatch.setattr(sys, "argv", ["rooms", "remove", "myproject/room-1"])
+        monkeypatch.setattr(rooms, "cmd_remove", lambda args: called.append(args))
+        rooms.main()
+        assert called[0] == ["myproject/room-1"]
+
     def test_main_dispatches_add(self, rooms, monkeypatch):
         called = []
         monkeypatch.setattr(sys, "argv", ["rooms", "add", "/repo", "room-1"])

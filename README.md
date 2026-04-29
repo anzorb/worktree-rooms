@@ -141,6 +141,18 @@ Refuses to run if the room has uncommitted changes.
 
 ---
 
+### `rooms remove <project/room>`
+
+Remove a free room: deletes the worktree directory, removes the placeholder branch, and unregisters the room from config.
+
+```bash
+rooms remove myproject/room-1
+```
+
+Only free rooms (on their placeholder branch) can be removed. Occupied rooms must be freed first.
+
+---
+
 ### `rooms move <project/source-room> <project/target-room>`
 
 Move a branch from one room to another. Target must be free.
