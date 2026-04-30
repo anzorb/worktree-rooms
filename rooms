@@ -4,12 +4,13 @@ rooms — git worktree manager with a hospital-room metaphor.
 
 Usage:
   rooms add <path-or-url> <room-name> [branch]
-  rooms ls
+  rooms ls [--watch]
   rooms free <project/room>
   rooms remove <project/room>
   rooms move <project/source-room> <project/target-room>
   rooms occupy <project/room> [branch]
   rooms purge [--merged]
+  rooms update
   rooms config set-base-path <path>
 
 Internal (used by shell wrapper / completion):
@@ -410,7 +411,7 @@ def cmd_add(args: list[str]) -> None:
 # rooms ls
 # ---------------------------------------------------------------------------
 
-def cmd_ls() -> None:
+def _render_ls() -> None:
     cfg   = load_config()
     rooms = cfg.get("rooms", [])
 
@@ -498,6 +499,20 @@ def cmd_ls() -> None:
         cached_at = cfg.get("cache_updated_at")
         age_str = human_age(cached_at) if cached_at else "unknown"
         print(f"\n{DIM}offline — cached data from {age_str}{RESET}")
+
+
+def cmd_ls(args: list[str] | None = None) -> None:
+    if "--watch" not in (args or []):
+        _render_ls()
+        return
+    try:
+        while True:
+            print("\033[2J\033[H", end="", flush=True)
+            _render_ls()
+            print(f"\n{DIM}auto-refresh every 60s — Ctrl+C to exit{RESET}")
+            time.sleep(60)
+    except KeyboardInterrupt:
+        print()
 
 
 # ---------------------------------------------------------------------------
@@ -840,18 +855,34 @@ def cmd_branches(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# rooms update
+# ---------------------------------------------------------------------------
+
+INSTALL_URL = "https://raw.githubusercontent.com/anzorb/worktree-rooms/main/install.sh"
+
+
+def cmd_update() -> None:
+    print("Fetching latest rooms from GitHub…")
+    result = run(["bash", "-c", f"curl -fsSL {INSTALL_URL} | bash"], check=False)
+    if result.returncode != 0:
+        print("Error: update failed.")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
 def usage() -> None:
     print("Usage:")
     print("  rooms add <path-or-url> <room-name> [branch]")
-    print("  rooms ls")
+    print("  rooms ls [--watch]")
     print("  rooms free <project/room>")
     print("  rooms remove <project/room>")
     print("  rooms move <project/source-room> <project/target-room>")
     print("  rooms occupy <project/room> [branch]")
     print("  rooms purge [--merged]")
+    print("  rooms update")
     print("  rooms config set-base-path <path>")
 
 
@@ -868,7 +899,7 @@ def main() -> None:
     elif command == "add":
         cmd_add(sys.argv[2:])
     elif command == "ls":
-        cmd_ls()
+        cmd_ls(sys.argv[2:])
     elif command == "free":
         cmd_free(sys.argv[2:])
     elif command == "remove":
@@ -879,6 +910,8 @@ def main() -> None:
         cmd_occupy(sys.argv[2:])
     elif command == "purge":
         cmd_purge(sys.argv[2:])
+    elif command == "update":
+        cmd_update()
     elif command == "config":
         cmd_config(sys.argv[2:])
     elif command == "_occupy":

@@ -485,3 +485,24 @@ class TestCmdConfig:
         out = capsys.readouterr().out
         assert "/old/path" in out
         assert str(tmp_path) in out
+
+
+# ---------------------------------------------------------------------------
+# cmd_update
+# ---------------------------------------------------------------------------
+
+class TestCmdUpdate:
+    def test_success_runs_install_script(self, rooms, monkeypatch, capsys):
+        calls = []
+        monkeypatch.setattr(rooms, "run", make_run({("bash",): (0, "", "")}))
+        monkeypatch.setattr(rooms, "run", lambda cmd, check=True: (
+            calls.append(cmd) or
+            __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+        ))
+        rooms.cmd_update()
+        assert any("bash" in c and "curl" in " ".join(c) for c in calls)
+
+    def test_failure_exits(self, rooms, monkeypatch):
+        monkeypatch.setattr(rooms, "run", make_run({("bash",): (1, "", "error")}))
+        with pytest.raises(SystemExit):
+            rooms.cmd_update()

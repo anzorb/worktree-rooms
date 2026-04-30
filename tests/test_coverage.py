@@ -335,6 +335,37 @@ class TestCmdLs:
         out = capsys.readouterr().out
         assert "feat" in out
 
+    def test_watch_calls_render_in_loop_then_exits(self, rooms, monkeypatch, capsys):
+        render_calls = []
+        monkeypatch.setattr(rooms, "_render_ls", lambda: render_calls.append(1))
+
+        sleep_calls = []
+        def fake_sleep(n):
+            sleep_calls.append(n)
+            if len(sleep_calls) >= 2:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(rooms.time, "sleep", fake_sleep)
+
+        rooms.cmd_ls(["--watch"])
+
+        assert len(render_calls) == 2
+        assert len(sleep_calls) == 2
+
+    def test_watch_prints_refresh_hint(self, rooms, monkeypatch, capsys):
+        monkeypatch.setattr(rooms, "_render_ls", lambda: None)
+
+        sleep_calls = []
+        def fake_sleep(n):
+            sleep_calls.append(n)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(rooms.time, "sleep", fake_sleep)
+
+        rooms.cmd_ls(["--watch"])
+        out = capsys.readouterr().out
+        assert "Ctrl+C" in out
+
 
 # ---------------------------------------------------------------------------
 # cmd_occupy (public wrapper)
@@ -682,7 +713,7 @@ class TestMain:
     def test_main_dispatches_ls(self, rooms, monkeypatch):
         called = []
         monkeypatch.setattr(sys, "argv", ["rooms", "ls"])
-        monkeypatch.setattr(rooms, "cmd_ls", lambda: called.append("ls"))
+        monkeypatch.setattr(rooms, "cmd_ls", lambda args: called.append("ls"))
         rooms.main()
         assert "ls" in called
 

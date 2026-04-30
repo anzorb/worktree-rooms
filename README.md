@@ -92,7 +92,7 @@ Rooms are created under `~/rooms/<room-name>` by default. Change `rooms_base` in
 
 ---
 
-### `rooms ls`
+### `rooms ls [--watch]`
 
 List all rooms grouped by project, with branch, last commit age, PR number, and CI status.
 
@@ -104,6 +104,12 @@ myproject
   room-2       feature/login   45m ago      🔨in-progress  #42 ✅
   room-3       fix/crash       2h ago       🔨in-progress  no PR
   emergency-1  —               —            [free]
+```
+
+Pass `--watch` to keep the list live — the screen clears and refreshes every 60 seconds until Ctrl+C:
+
+```bash
+rooms ls --watch
 ```
 
 - **[free]** — room is on its placeholder branch, ready to take work
@@ -177,6 +183,16 @@ rooms purge --merged  # candidates: merged PRs only
 ```
 
 Shows a confirmation prompt (default: No) before making any changes.
+
+---
+
+### `rooms update`
+
+Update `rooms` to the latest version. Re-runs the official install script, which replaces the binary and refreshes shell completions for every detected shell (zsh, bash, fish).
+
+```bash
+rooms update
+```
 
 ---
 
