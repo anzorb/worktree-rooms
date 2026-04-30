@@ -461,6 +461,54 @@ class TestCmdPurge:
         out = capsys.readouterr().out
         assert "freed" in out
 
+    def test_force_discards_changes_and_frees_room(self, rooms, monkeypatch, tmp_path, capsys):
+        """--force discards uncommitted changes instead of skipping the room."""
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch", lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (True, None, False, "2h ago", {})
+        })
+        calls = []
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+            ("git", "status", "--porcelain"):     (0, "M  file.py\n", ""),
+            ("git", "checkout", "--"):            (0, "", ""),
+            ("git", "clean",):                    (0, "", ""),
+            ("git", "checkout",):                 (0, "", ""),
+            ("git", "branch", "-D"):              (0, "", ""),
+        }))
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+
+        rooms.cmd_purge(["--force"])
+        out = capsys.readouterr().out
+        assert "skipping" not in out
+        assert "freed" in out
+
+    def test_without_force_skips_uncommitted_room(self, rooms, monkeypatch, tmp_path, capsys):
+        """Without --force, rooms with uncommitted changes are skipped."""
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch", lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (True, None, False, "2h ago", {})
+        })
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+            ("git", "status", "--porcelain"):     (0, "M  file.py\n", ""),
+        }))
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+
+        rooms.cmd_purge([])
+        out = capsys.readouterr().out
+        assert "skipping" in out
+
 
 # ---------------------------------------------------------------------------
 # cmd_config

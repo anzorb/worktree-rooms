@@ -9,7 +9,7 @@ Usage:
   rooms remove <project/room>
   rooms move <project/source-room> <project/target-room>
   rooms occupy <project/room> [branch]
-  rooms purge [--merged]
+  rooms purge [--merged] [--force]
   rooms update
   rooms config set-base-path <path>
 
@@ -651,6 +651,7 @@ def cmd_remove(args: list[str]) -> None:
 
 def cmd_purge(args: list[str] | None = None) -> None:
     merged_only = "--merged" in (args or [])
+    force       = "--force"  in (args or [])
     cfg   = load_config()
     rooms = cfg.get("rooms", [])
 
@@ -735,8 +736,11 @@ def cmd_purge(args: list[str] | None = None) -> None:
 
         r = run(["git", "status", "--porcelain"], cwd=worktree_path, check=False)
         if r.stdout.strip():
-            print(f"  {name}: skipping — has uncommitted changes.")
-            continue
+            if not force:
+                print(f"  {name}: skipping — has uncommitted changes.")
+                continue
+            run(["git", "checkout", "--", "."], cwd=worktree_path)
+            run(["git", "clean", "-fd"], cwd=worktree_path)
 
         r = run(["git", "checkout", placeholder], cwd=worktree_path, check=False)
         if r.returncode != 0:
@@ -881,7 +885,7 @@ def usage() -> None:
     print("  rooms remove <project/room>")
     print("  rooms move <project/source-room> <project/target-room>")
     print("  rooms occupy <project/room> [branch]")
-    print("  rooms purge [--merged]")
+    print("  rooms purge [--merged] [--force]")
     print("  rooms update")
     print("  rooms config set-base-path <path>")
 

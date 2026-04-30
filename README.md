@@ -173,16 +173,18 @@ Frees the source first (to release the git branch lock), then checks out in the 
 
 ---
 
-### `rooms purge [--merged]`
+### `rooms purge [--merged] [--force]`
 
 Scan for rooms whose branches have been merged or fully pushed to remote, then offer to free them and delete the local branch.
 
 ```bash
-rooms purge           # candidates: merged PRs + fully-pushed branches
-rooms purge --merged  # candidates: merged PRs only
+rooms purge                   # candidates: merged PRs + fully-pushed branches
+rooms purge --merged          # candidates: merged PRs only
+rooms purge --force           # discard uncommitted changes instead of skipping
+rooms purge --merged --force  # combinable
 ```
 
-Shows a confirmation prompt (default: No) before making any changes.
+Shows a confirmation prompt (default: No) before making any changes. By default, rooms with uncommitted changes are skipped. Pass `--force` to discard those changes and free the room anyway.
 
 ---
 
