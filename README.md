@@ -167,12 +167,13 @@ Frees the source first (to release the git branch lock), then checks out in the 
 
 ---
 
-### `rooms purge`
+### `rooms purge [--merged]`
 
 Scan for rooms whose branches have been merged or fully pushed to remote, then offer to free them and delete the local branch.
 
 ```bash
-rooms purge
+rooms purge           # candidates: merged PRs + fully-pushed branches
+rooms purge --merged  # candidates: merged PRs only
 ```
 
 Shows a confirmation prompt (default: No) before making any changes.
