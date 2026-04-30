@@ -306,11 +306,47 @@ class TestDoOccupy:
         monkeypatch.setattr(rooms, "load_config", lambda: self._cfg(worktree))
         monkeypatch.setattr(rooms, "run", make_run({
             ("git", "rev-parse", "--abbrev-ref"): (0, "room-1\n", ""),
+            ("git", "fetch",):                    (0, "", ""),
+            ("git", "reset",):                    (0, "", ""),
             ("git", "checkout",):                 (0, "", ""),
         }))
         rooms._do_occupy(["myproject/room-1", "feat"], silent=True)
         out = capsys.readouterr().out
         assert "Checked out" not in out
+
+    def test_sync_fetches_and_resets_to_default_branch(self, rooms, monkeypatch, tmp_path):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        monkeypatch.setattr(rooms, "load_config", lambda: self._cfg(worktree))
+        calls = []
+        def capturing_run(cmd, cwd=None, check=True):
+            calls.append(cmd)
+            return make_run({
+                ("git", "rev-parse", "--abbrev-ref"): (0, "room-1\n", ""),
+                ("git", "fetch",):                    (0, "", ""),
+                ("git", "reset",):                    (0, "", ""),
+            })(cmd, cwd=cwd, check=check)
+        monkeypatch.setattr(rooms, "run", capturing_run)
+
+        rooms._do_occupy(["myproject/room-1"])
+
+        assert any("fetch" in c and "origin" in c and "main" in c for c in calls)
+        assert any("reset" in c and "--hard" in c and "origin/main" in c for c in calls)
+
+    def test_sync_offline_prints_warning_and_continues(self, rooms, monkeypatch, tmp_path, capsys):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        monkeypatch.setattr(rooms, "load_config", lambda: self._cfg(worktree))
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "room-1\n", ""),
+            ("git", "fetch",):                    (1, "", "fatal: unable to connect"),
+        }))
+
+        result = rooms._do_occupy(["myproject/room-1"])
+
+        out = capsys.readouterr().out
+        assert "offline" in out
+        assert result == str(worktree)
 
 
 # ---------------------------------------------------------------------------

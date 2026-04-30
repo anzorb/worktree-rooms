@@ -127,6 +127,8 @@ rooms occupy myproject/room-1 feature/my-branch
 
 Tab completion works for both `project/room` specs and branch names. If there is only one project and the room name is unambiguous, the bare room name is also accepted.
 
+The room's placeholder branch is automatically synced to `origin/<default-branch>` before you enter, so new branches always start from the latest. If the remote is unreachable, a warning is printed and you still land in the room.
+
 ---
 
 ### `rooms free <project/room>`

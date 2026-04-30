@@ -764,6 +764,13 @@ def _do_occupy(args: list[str], silent: bool = False) -> str:
         print(f"Free it first with: rooms free {room_spec}")
         sys.exit(1)
 
+    default_branch = room.get("default_branch", "main")
+    fetch = run(["git", "fetch", "origin", default_branch], cwd=worktree_path, check=False)
+    if fetch.returncode == 0:
+        run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=worktree_path)
+    else:
+        print(f"{DIM}(offline — could not sync to origin/{default_branch}){RESET}")
+
     if branch:
         result = run(["git", "checkout", branch], cwd=worktree_path, check=False)
         if result.returncode != 0:
