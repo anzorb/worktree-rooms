@@ -92,6 +92,37 @@ Rooms are created under `~/rooms/<room-name>` by default. Change `rooms_base` in
 
 ---
 
+### `rooms link <project/room> <path-or-url> [subdir] [branch]`
+
+Attach a **second repository** into an existing room as a nested git worktree, turning the room into a multi-repo workspace. This is handy for cross-repo work — e.g. editing a frontend and its SDK together — and for AI tools that operate on a single directory, since both repos then live under one room.
+
+```bash
+# Link a local repo (folder name defaults to the repo name, checked out detached)
+rooms link myproject/room-1 ~/dev/sdk
+
+# Link from a GitHub URL (clones to ~/code/sdk first)
+rooms link myproject/room-1 git@github.com:org/sdk.git
+
+# Custom subfolder name and a specific branch
+rooms link myproject/room-1 ~/dev/sdk libs develop
+```
+
+The linked repo is added under `<room>/<subdir>` and recorded in the room's config under `linked_repos`. By default it is checked out **detached** at the repo's current `HEAD` (avoids "branch already checked out" conflicts); pass a branch to check one out instead. The nested folder is automatically added to the room worktree's git exclude, so it doesn't show up as untracked in the host repo's status.
+
+---
+
+### `rooms unlink <project/room> <subdir>`
+
+Detach a previously linked repo from a room and remove its worktree.
+
+```bash
+rooms unlink myproject/room-1 sdk
+```
+
+Linked repos are also cleaned up automatically when you `rooms remove` the room.
+
+---
+
 ### `rooms ls [--watch]`
 
 List all rooms grouped by project, with branch, last commit age, PR number, and CI status.

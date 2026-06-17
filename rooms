@@ -4,6 +4,8 @@ rooms — git worktree manager with a hospital-room metaphor.
 
 Usage:
   rooms add <path-or-url> <room-name> [branch]
+  rooms link <project/room> <path-or-url> [subdir] [branch]
+  rooms unlink <project/room> <subdir>
   rooms ls [--watch]
   rooms free <project/room>
   rooms remove <project/room>
@@ -120,6 +122,50 @@ def fetch_repo(repo: str) -> bool:
     """Fetch origin and return True if successful (i.e. we are online)."""
     r = run(["git", "fetch", "--quiet", "origin"], cwd=repo, check=False)
     return r.returncode == 0
+
+
+def resolve_source_repo(source: str) -> str:
+    """Resolve a repo source (local path or git URL) to a local repo path.
+
+    Git URLs are cloned into ~/code (skipped if already present). Local paths
+    are expanded and validated. Exits with an error on a missing local path.
+    """
+    is_url = source.startswith("git@") or source.startswith("https://")
+    if is_url:
+        repo_name = re.sub(r"\.git$", "", source.rstrip("/").split("/")[-1])
+        clone_base = Path.home() / "code"
+        clone_base.mkdir(parents=True, exist_ok=True)
+        repo = str(clone_base / repo_name)
+        if not Path(repo).exists():
+            print(f"Cloning {source} → {repo} …")
+            run(["git", "clone", source, repo])
+        else:
+            print(f"Repo already exists at {repo}, skipping clone.")
+        return repo
+    repo = expand(source)
+    if not Path(repo).exists():
+        print(f"Error: path '{repo}' does not exist.")
+        sys.exit(1)
+    return repo
+
+
+def exclude_from_status(worktree_path: str, subdir: str) -> None:
+    """Best-effort: add a nested subdir to the worktree's git exclude file so a
+    linked repo does not show up as untracked in the host worktree's status."""
+    r = run(["git", "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+            cwd=worktree_path, check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return
+    exclude_path = Path(r.stdout.strip())
+    line = f"/{subdir}/"
+    try:
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude_path.read_text().splitlines() if exclude_path.exists() else []
+        if line not in existing:
+            with open(exclude_path, "a") as f:
+                f.write(line + "\n")
+    except OSError:
+        pass
 
 
 def detect_default_branch(repo_path: str) -> str:
@@ -359,22 +405,7 @@ def cmd_add(args: list[str]) -> None:
         print(f"Error: a room named '{room_name}' already exists.")
         sys.exit(1)
 
-    is_url = source.startswith("git@") or source.startswith("https://")
-    if is_url:
-        repo_name = re.sub(r"\.git$", "", source.rstrip("/").split("/")[-1])
-        clone_base = Path.home() / "code"
-        clone_base.mkdir(parents=True, exist_ok=True)
-        main_repo = str(clone_base / repo_name)
-        if not Path(main_repo).exists():
-            print(f"Cloning {source} → {main_repo} …")
-            run(["git", "clone", source, main_repo])
-        else:
-            print(f"Repo already exists at {main_repo}, skipping clone.")
-    else:
-        main_repo = expand(source)
-        if not Path(main_repo).exists():
-            print(f"Error: path '{main_repo}' does not exist.")
-            sys.exit(1)
+    main_repo = resolve_source_repo(source)
 
     default_branch = detect_default_branch(main_repo)
     base_branch    = base_branch_override or default_branch
@@ -405,6 +436,89 @@ def cmd_add(args: list[str]) -> None:
     print(f"  Worktree : {worktree_path}")
     print(f"  Repo     : {main_repo}")
     print(f"  Branch   : {room_name}  (placeholder — room is free)")
+
+
+# ---------------------------------------------------------------------------
+# rooms link / unlink — attach additional repos into a room
+# ---------------------------------------------------------------------------
+
+def cmd_link(args: list[str]) -> None:
+    """Attach a secondary repo into a room as a nested worktree, turning the
+    room into a multi-repo workspace (handy for cross-repo work and AI tools
+    that operate on a single directory)."""
+    if len(args) < 2:
+        print("Usage: rooms link <project/room> <path-or-url> [subdir] [branch]")
+        sys.exit(1)
+
+    spec, source = args[0], args[1]
+    subdir_override = args[2] if len(args) >= 3 else None
+    branch_override = args[3] if len(args) >= 4 else None
+
+    cfg  = load_config()
+    room = resolve_room(cfg, spec)
+
+    linked_repo = resolve_source_repo(source)
+    subdir      = subdir_override or Path(linked_repo).name
+    target      = str(Path(room["path"]) / subdir)
+
+    linked = room.setdefault("linked_repos", [])
+    if any(l["subdir"] == subdir for l in linked):
+        print(f"Error: room '{room['name']}' already has a repo linked at '{subdir}'.")
+        sys.exit(1)
+    if Path(target).exists():
+        print(f"Error: '{target}' already exists.")
+        sys.exit(1)
+
+    print(f"Linking {Path(linked_repo).name} → {target} …")
+    if branch_override:
+        result = run(["git", "worktree", "add", target, branch_override],
+                     cwd=linked_repo, check=False)
+    else:
+        result = run(["git", "worktree", "add", "--detach", target],
+                     cwd=linked_repo, check=False)
+    if result.returncode != 0:
+        print(f"Error: could not add worktree for '{linked_repo}'.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    exclude_from_status(room["path"], subdir)
+
+    linked.append({"repo": linked_repo, "subdir": subdir, "path": target})
+    save_config(cfg)
+
+    print(f"\n{GREEN}Linked '{Path(linked_repo).name}' into room '{room['name']}'.{RESET}")
+    print(f"  Path : {target}")
+
+
+def cmd_unlink(args: list[str]) -> None:
+    """Detach a previously linked repo from a room and remove its worktree."""
+    if len(args) < 2:
+        print("Usage: rooms unlink <project/room> <subdir>")
+        sys.exit(1)
+
+    spec, subdir = args[0], args[1]
+
+    cfg   = load_config()
+    room  = resolve_room(cfg, spec)
+    linked = room.get("linked_repos", [])
+    entry  = next((l for l in linked if l["subdir"] == subdir), None)
+    if entry is None:
+        print(f"Error: room '{room['name']}' has no linked repo at '{subdir}'.")
+        sys.exit(1)
+
+    result = run(["git", "worktree", "remove", "--force", entry["path"]],
+                 cwd=entry["repo"], check=False)
+    if result.returncode != 0:
+        print(f"Error: could not remove worktree at '{entry['path']}'.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    room["linked_repos"] = [l for l in linked if l["subdir"] != subdir]
+    if not room["linked_repos"]:
+        del room["linked_repos"]
+    save_config(cfg)
+
+    print(f"{GREEN}Unlinked '{subdir}' from room '{room['name']}'.{RESET}")
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +744,12 @@ def cmd_remove(args: list[str]) -> None:
         print(f"Error: room '{room['name']}' is occupied (branch '{branch}').")
         print(f"Free it first with: rooms free {args[0]}")
         sys.exit(1)
+
+    # Remove any linked repos' nested worktrees first, otherwise the room
+    # directory cannot be removed cleanly.
+    for entry in room.get("linked_repos", []):
+        run(["git", "worktree", "remove", "--force", entry["path"]],
+            cwd=entry["repo"], check=False)
 
     result = run(["git", "worktree", "remove", room["path"]], cwd=room["main_repo"], check=False)
     if result.returncode != 0:
@@ -880,6 +1000,8 @@ def cmd_update() -> None:
 def usage() -> None:
     print("Usage:")
     print("  rooms add <path-or-url> <room-name> [branch]")
+    print("  rooms link <project/room> <path-or-url> [subdir] [branch]")
+    print("  rooms unlink <project/room> <subdir>")
     print("  rooms ls [--watch]")
     print("  rooms free <project/room>")
     print("  rooms remove <project/room>")
@@ -902,6 +1024,10 @@ def main() -> None:
         sys.exit(0)
     elif command == "add":
         cmd_add(sys.argv[2:])
+    elif command == "link":
+        cmd_link(sys.argv[2:])
+    elif command == "unlink":
+        cmd_unlink(sys.argv[2:])
     elif command == "ls":
         cmd_ls(sys.argv[2:])
     elif command == "free":

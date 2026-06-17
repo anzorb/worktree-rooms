@@ -16,6 +16,7 @@ Help: `rooms --help`
 - **free** — room is on its placeholder branch, available for new work.
 - **in-progress** — room has a real branch checked out.
 - **merged** — the branch's PR was merged into the default branch.
+- **linked repo** — a secondary repository attached to a room as a nested worktree (under `<room>/<subdir>`), making the room a multi-repo workspace. Tracked in the room's `linked_repos` config list.
 
 ## Commands
 
@@ -30,6 +31,29 @@ Create a new room backed by a git worktree.
 ```
 rooms add ~/dev/myproject room-1
 rooms add git@github.com:org/myproject.git emergency-1 main
+```
+
+### rooms link <project/room> <path-or-url> [subdir] [branch]
+
+Attach a secondary repo into a room as a nested git worktree, turning the room into a multi-repo workspace (useful for cross-repo work and AI tools that operate on a single directory).
+
+- `path-or-url`: local repo path **or** a GitHub URL (cloned to `~/code/<repo-name>` first, same as `rooms add`).
+- `subdir` (optional): folder name inside the room. Defaults to the repo's basename.
+- `branch` (optional): branch to check out. Defaults to a **detached** checkout at the repo's current `HEAD` (avoids "branch already checked out" conflicts).
+
+The nested folder is added to the room worktree's git exclude so it doesn't appear as untracked. The link is recorded under the room's `linked_repos` in config.
+
+```
+rooms link myproject/room-1 ~/dev/sdk
+rooms link myproject/room-1 git@github.com:org/sdk.git libs develop
+```
+
+### rooms unlink <project/room> <subdir>
+
+Detach a linked repo and remove its nested worktree. Linked repos are also removed automatically by `rooms remove`.
+
+```
+rooms unlink myproject/room-1 sdk
 ```
 
 ### rooms ls
@@ -112,11 +136,20 @@ Location: `~/.config/rooms/config.json`
       "main_repo": "/Users/you/dev/myproject",
       "path": "/Users/you/rooms/room-1",
       "placeholder_branch": "room-1",
-      "default_branch": "main"
+      "default_branch": "main",
+      "linked_repos": [
+        {
+          "repo": "/Users/you/dev/sdk",
+          "subdir": "sdk",
+          "path": "/Users/you/rooms/room-1/sdk"
+        }
+      ]
     }
   ]
 }
 ```
+
+`linked_repos` is optional and only present on rooms that have repos attached via `rooms link`.
 
 ## Shell integration
 
