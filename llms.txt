@@ -74,19 +74,22 @@ Internally: frees the source first (to release the git branch lock), then checks
 rooms move myproject/room-2 myproject/emergency-1
 ```
 
-### rooms purge [--merged]
+### rooms purge [project/room...] [--force]
 
-Scan occupied rooms and list those whose branch is safe to clean up:
-- **merged** — PR was merged into the default branch
-- **fully pushed** — all local commits pushed to remote (no unmerged local work)
+Free rooms whose branches have been merged into their default branch, and delete the local branch. Only merged branches are eligible — a branch that is merely pushed but not merged will never be purged.
 
-`--merged` restricts candidates to merged PRs only (skips fully-pushed rooms).
+With no room arguments, scans all occupied rooms. Pass one or more `project/room` specs to target only those rooms.
 
-Shows a table and prompts for confirmation (default: No) before making any changes. Frees the room and deletes the local branch on confirmation.
+- `--force` discards uncommitted changes instead of skipping. It does NOT bypass the merge requirement.
+- `--merged` is accepted as a no-op for backwards compatibility.
+
+Shows a table and prompts for confirmation (default: No) before making any changes.
 
 ```
 rooms purge
-rooms purge --merged
+rooms purge sdk/room-1
+rooms purge sdk/room-1 apollo/room-2
+rooms purge sdk/room-1 --force
 ```
 
 ### rooms config set-base-path <path>

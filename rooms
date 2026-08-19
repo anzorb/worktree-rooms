@@ -9,7 +9,7 @@ Usage:
   rooms remove <project/room>
   rooms move <project/source-room> <project/target-room>
   rooms occupy <project/room> [branch]
-  rooms purge [--merged] [--force]
+  rooms purge [project/room...] [--force]
   rooms update
   rooms config set-base-path <path>
 
@@ -650,14 +650,19 @@ def cmd_remove(args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_purge(args: list[str] | None = None) -> None:
-    merged_only = "--merged" in (args or [])
     force       = "--force"  in (args or [])
+    room_specs  = [a for a in (args or []) if not a.startswith("-")]
     cfg   = load_config()
     rooms = cfg.get("rooms", [])
 
     if not rooms:
         print("No rooms configured yet.")
         return
+
+    # When room specs are given, resolve each (exits on unknown/ambiguous)
+    # and narrow the working set to only the targeted rooms.
+    if room_specs:
+        rooms = [resolve_room(cfg, spec) for spec in room_specs]
 
     rooms = sorted(rooms, key=lambda r: (Path(r["main_repo"]).name.lower(), r["name"].lower()))
     cache = load_cache(cfg)
@@ -675,12 +680,20 @@ def cmd_purge(args: list[str] | None = None) -> None:
     # Collect non-free rooms for parallel remote info
     pending: list[tuple[dict, str]] = []
     for room in rooms:
+        name        = room["name"]
         placeholder = room.get("placeholder_branch", room["name"])
         if not Path(room["path"]).exists():
+            if room_specs:
+                print(f"  {name}: worktree missing, skipping.")
             continue
         branch = current_branch(room["path"])
-        if branch and branch != placeholder:
-            pending.append((room, branch))
+        if not branch:
+            continue
+        if branch == placeholder:
+            if room_specs:
+                print(f"  {name}: already free, skipping.")
+            continue
+        pending.append((room, branch))
 
     # Phase 2: remote info in parallel
     info_results = parallel_room_info(pending, online_by_repo, cache)
@@ -693,24 +706,24 @@ def cmd_purge(args: list[str] | None = None) -> None:
         cache.update(cache_updates)
         save_cache(cfg, cache, updated_at=int(time.time()))
 
-    # Identify candidates
+    # Identify candidates — only merged branches are eligible, never just pushed.
     candidates = []
     for room, branch in pending:
         name = room["name"]
         merged, pr_info, pushed, age, _ = info_results.get(name, (False, None, False, "?", {}))
         if merged:
             reason = f"{GREEN}merged{RESET}"
-        elif pushed and not merged_only:
-            reason = f"{ORANGE}fully pushed{RESET}"
         else:
+            if room_specs:
+                print(f"  {name}: branch not merged — skipping.")
             continue
         candidates.append((room, branch, reason))
 
     if not candidates:
-        if merged_only:
-            print("Nothing to purge — no rooms have a merged PR.")
+        if room_specs:
+            print("Nothing to purge — none of the specified rooms have a merged branch.")
         else:
-            print("Nothing to purge — all busy rooms have unpushed local commits.")
+            print("Nothing to purge — no rooms have a merged branch.")
         return
 
     w_name   = max(len("ROOM"),   max(len(c[0]["name"]) for c in candidates))
@@ -885,7 +898,7 @@ def usage() -> None:
     print("  rooms remove <project/room>")
     print("  rooms move <project/source-room> <project/target-room>")
     print("  rooms occupy <project/room> [branch]")
-    print("  rooms purge [--merged] [--force]")
+    print("  rooms purge [project/room...] [--force]")
     print("  rooms update")
     print("  rooms config set-base-path <path>")
 

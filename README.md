@@ -173,18 +173,26 @@ Frees the source first (to release the git branch lock), then checks out in the 
 
 ---
 
-### `rooms purge [--merged] [--force]`
+### `rooms purge [project/room...] [--force]`
 
-Scan for rooms whose branches have been merged or fully pushed to remote, then offer to free them and delete the local branch.
+Free rooms whose branches have been merged into their default branch, and delete the local branch.
+
+**Only merged branches are eligible for purge.** A branch that is merely pushed to remote — but not merged via PR — will never be purged. This is a safety measure to prevent losing unmerged work.
+
+With no room arguments, scans all occupied rooms. Pass one or more room specs to target only those rooms.
 
 ```bash
-rooms purge                   # candidates: merged PRs + fully-pushed branches
-rooms purge --merged          # candidates: merged PRs only
-rooms purge --force           # discard uncommitted changes instead of skipping
-rooms purge --merged --force  # combinable
+rooms purge                                # scan all merged rooms
+rooms purge sdk/room-1                     # target one room (must be merged)
+rooms purge sdk/room-1 apollo/room-2       # target multiple rooms
+rooms purge sdk/room-1 --force             # target + discard uncommitted changes
 ```
 
-Shows a confirmation prompt (default: No) before making any changes. By default, rooms with uncommitted changes are skipped. Pass `--force` to discard those changes and free the room anyway.
+Shows a confirmation prompt (default: No) before making any changes.
+
+- `--force` discards uncommitted changes in the worktree before freeing. It does **not** bypass the merge requirement — non-merged branches are never purged regardless of `--force`.
+- Rooms already on their placeholder branch are skipped with a message.
+- `--merged` is accepted as a no-op for backwards compatibility (merged-only is now the default and only behavior).
 
 ---
 

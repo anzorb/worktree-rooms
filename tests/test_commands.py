@@ -418,8 +418,8 @@ class TestCmdPurge:
         out = capsys.readouterr().out
         assert "freed" in out
 
-    def test_merged_only_excludes_pushed_rooms(self, rooms, monkeypatch, tmp_path, capsys):
-        """--merged skips rooms that are only fully-pushed (not merged)."""
+    def test_pushed_but_not_merged_never_candidate(self, rooms, monkeypatch, tmp_path, capsys):
+        """Pushed-but-not-merged rooms are never purge candidates, regardless of --merged."""
         worktree = tmp_path / "room-1"
         worktree.mkdir()
         room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
@@ -433,10 +433,9 @@ class TestCmdPurge:
             ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
         }))
 
-        rooms.cmd_purge(["--merged"])
+        rooms.cmd_purge()
         out = capsys.readouterr().out
         assert "Nothing to purge" in out
-        assert "merged PR" in out
 
     def test_merged_only_includes_merged_rooms(self, rooms, monkeypatch, tmp_path, capsys):
         """--merged still purges rooms whose PR was merged."""
@@ -508,6 +507,124 @@ class TestCmdPurge:
         rooms.cmd_purge([])
         out = capsys.readouterr().out
         assert "skipping" in out
+
+
+# ---------------------------------------------------------------------------
+# cmd_purge — room-id targeting
+# ---------------------------------------------------------------------------
+
+class TestCmdPurgeTargeted:
+    def _setup(self, rooms, monkeypatch, tmp_path, info_result, *,
+               run_responses=None, rooms_list=None, input_answer="y"):
+        if rooms_list is None:
+            worktree = tmp_path / "room-1"
+            worktree.mkdir()
+            room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+            rooms_list = [room]
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(*rooms_list))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch",
+                            lambda _: {r["main_repo"]: True for r in rooms_list})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: info_result)
+        if run_responses is None:
+            run_responses = {("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", "")}
+        monkeypatch.setattr(rooms, "run", make_run(run_responses))
+        monkeypatch.setattr("builtins.input", lambda _: input_answer)
+
+    def test_targeted_merged_room_frees(self, rooms, monkeypatch, tmp_path, capsys):
+        self._setup(rooms, monkeypatch, tmp_path,
+                    {"room-1": (True, None, False, "2h ago", {})},
+                    run_responses={
+                        ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+                        ("git", "status", "--porcelain"):     (0, "", ""),
+                        ("git", "checkout",):                 (0, "", ""),
+                        ("git", "branch", "-D"):              (0, "", ""),
+                    })
+        rooms.cmd_purge(["myproject/room-1"])
+        out = capsys.readouterr().out
+        assert "freed" in out
+
+    def test_targeted_not_merged_without_force_skips(self, rooms, monkeypatch, tmp_path, capsys):
+        self._setup(rooms, monkeypatch, tmp_path,
+                    {"room-1": (False, None, False, "2h ago", {})})
+        rooms.cmd_purge(["myproject/room-1"])
+        out = capsys.readouterr().out
+        assert "branch not merged" in out
+        assert "Nothing to purge" in out
+
+    def test_targeted_not_merged_with_force_still_skips(self, rooms, monkeypatch, tmp_path, capsys):
+        self._setup(rooms, monkeypatch, tmp_path,
+                    {"room-1": (False, None, False, "2h ago", {})})
+        rooms.cmd_purge(["myproject/room-1", "--force"])
+        out = capsys.readouterr().out
+        assert "freed" not in out
+        assert "branch not merged" in out
+        assert "Nothing to purge" in out
+
+    def test_targeted_already_free_skips(self, rooms, monkeypatch, tmp_path, capsys):
+        self._setup(rooms, monkeypatch, tmp_path,
+                    {"room-1": (False, None, False, "2h ago", {})},
+                    run_responses={
+                        ("git", "rev-parse", "--abbrev-ref"): (0, "room-1\n", ""),
+                    })
+        rooms.cmd_purge(["myproject/room-1"])
+        out = capsys.readouterr().out
+        assert "already free" in out
+
+    def test_targeted_multiple_rooms_only_merged_freed(self, rooms, monkeypatch, tmp_path, capsys):
+        w1 = tmp_path / "room-1"; w1.mkdir()
+        w2 = tmp_path / "room-2"; w2.mkdir()
+        r1 = make_room(name="room-1", repo="/repo/myproject", path=str(w1))
+        r2 = make_room(name="room-2", repo="/repo/myproject", path=str(w2))
+        self._setup(rooms, monkeypatch, tmp_path,
+                    {"room-1": (True, None, False, "2h ago", {}),
+                     "room-2": (False, None, False, "2h ago", {})},
+                    rooms_list=[r1, r2],
+                    run_responses={
+                        ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+                        ("git", "status", "--porcelain"):     (0, "", ""),
+                        ("git", "checkout",):                 (0, "", ""),
+                        ("git", "branch", "-D"):              (0, "", ""),
+                    })
+        rooms.cmd_purge(["myproject/room-1", "myproject/room-2"])
+        out = capsys.readouterr().out
+        assert "freed" in out
+        assert "not merged" in out
+
+    def test_targeted_unknown_room_exits(self, rooms, monkeypatch, tmp_path):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        with pytest.raises(SystemExit):
+            rooms.cmd_purge(["myproject/ghost"])
+
+    def test_scan_all_force_does_not_bypass_merge_check(self, rooms, monkeypatch, tmp_path, capsys):
+        self._setup(rooms, monkeypatch, tmp_path,
+                    {"room-1": (False, None, False, "2h ago", {})})
+        rooms.cmd_purge(["--force"])
+        out = capsys.readouterr().out
+        assert "Nothing to purge" in out
+
+    def test_force_does_not_bypass_merge_check(self, rooms, monkeypatch, tmp_path, capsys):
+        """--force must never bypass the merge requirement, even for targeted rooms."""
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch", lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (False, None, True, "2h ago", {})  # pushed but NOT merged
+        })
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+        }))
+        rooms.cmd_purge(["myproject/room-1", "--force"])
+        out = capsys.readouterr().out
+        assert "branch not merged" in out
+        assert "freed" not in out
+        assert "Nothing to purge" in out
 
 
 # ---------------------------------------------------------------------------

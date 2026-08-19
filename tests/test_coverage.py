@@ -558,19 +558,14 @@ class TestCmdPurgeErrorPaths:
         monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {})
         rooms.cmd_purge()  # should complete without error
 
-    def test_pushed_shows_as_candidate(self, rooms, monkeypatch, tmp_path, capsys):
+    def test_pushed_but_not_merged_not_candidate(self, rooms, monkeypatch, tmp_path, capsys):
         worktree = self._setup(rooms, monkeypatch, tmp_path, {
             "room-1": (False, None, True, "2h ago", {})  # pushed=True
         })
-        monkeypatch.setattr(rooms, "run", make_run({
-            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
-            ("git", "status", "--porcelain"):     (0, "", ""),
-            ("git", "checkout",):                 (0, "", ""),
-            ("git", "branch", "-D"):              (0, "", ""),
-        }))
         rooms.cmd_purge()
         out = capsys.readouterr().out
-        assert "freed" in out
+        assert "freed" not in out
+        assert "Nothing to purge" in out
 
     def test_uncommitted_changes_skips_room(self, rooms, monkeypatch, tmp_path, capsys):
         worktree = self._setup(rooms, monkeypatch, tmp_path, {
@@ -618,6 +613,57 @@ class TestCmdPurgeErrorPaths:
         rooms.cmd_purge()
         out = capsys.readouterr().out
         assert "could not remove" in out
+
+    def test_targeted_missing_worktree_skips(self, rooms, monkeypatch, tmp_path, capsys):
+        room = make_room(name="room-1", repo="/repo/myproject",
+                         path=str(tmp_path / "nonexistent"))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch",
+                            lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {})
+        rooms.cmd_purge(["myproject/room-1"])
+        out = capsys.readouterr().out
+        assert "worktree missing" in out
+
+    def test_targeted_uncommitted_without_force_skips(self, rooms, monkeypatch, tmp_path, capsys):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch",
+                            lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (True, None, False, "2h ago", {})
+        })
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+            ("git", "status", "--porcelain"):     (0, "M  file.py\n", ""),
+        }))
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        rooms.cmd_purge(["myproject/room-1"])
+        out = capsys.readouterr().out
+        assert "skipping" in out
+
+    def test_targeted_merged_only_excludes_pushed(self, rooms, monkeypatch, tmp_path, capsys):
+        worktree = tmp_path / "room-1"
+        worktree.mkdir()
+        room = make_room(name="room-1", repo="/repo/myproject", path=str(worktree))
+        monkeypatch.setattr(rooms, "load_config", lambda: make_cfg(room))
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "parallel_fetch",
+                            lambda _: {"/repo/myproject": True})
+        monkeypatch.setattr(rooms, "parallel_room_info", lambda *_: {
+            "room-1": (False, None, True, "2h ago", {})  # pushed but NOT merged
+        })
+        monkeypatch.setattr(rooms, "run", make_run({
+            ("git", "rev-parse", "--abbrev-ref"): (0, "feat\n", ""),
+        }))
+        rooms.cmd_purge(["myproject/room-1", "--merged"])
+        out = capsys.readouterr().out
+        assert "branch not merged" in out
+        assert "Nothing to purge" in out
 
 
 # ---------------------------------------------------------------------------
