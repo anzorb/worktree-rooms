@@ -411,13 +411,17 @@ def cmd_add(args: list[str]) -> None:
 # rooms ls
 # ---------------------------------------------------------------------------
 
-def _render_ls() -> None:
-    cfg   = load_config()
+def compute_ls(cfg: dict) -> dict:
+    """Return room data as a plain dict (no ANSI/OSC-8). Shared by text and JSON."""
     rooms = cfg.get("rooms", [])
-
     if not rooms:
-        print("No rooms configured yet. Use 'rooms add' to create one.")
-        return
+        return {
+            "version": 1,
+            "generated_at": int(time.time()),
+            "any_offline": False,
+            "cache_updated_at": cfg.get("cache_updated_at"),
+            "rooms": [],
+        }
 
     rooms = sorted(rooms, key=lambda r: (Path(r["main_repo"]).name.lower(), r["name"].lower()))
     cache = load_cache(cfg)
@@ -427,8 +431,8 @@ def _render_ls() -> None:
     any_offline    = not all(online_by_repo.values())
 
     # Classify rooms and collect those needing remote info
-    free_rows: dict[str, tuple] = {}
-    pending:   list[tuple[dict, str]] = []
+    free_rows: dict[str, dict] = {}
+    pending: list[tuple[dict, str]] = []
     room_branch: dict[str, str] = {}
 
     for room in rooms:
@@ -437,14 +441,14 @@ def _render_ls() -> None:
         placeholder   = room.get("placeholder_branch", name)
 
         if not Path(worktree_path).exists():
-            free_rows[name] = (name, "(missing)", "(missing)", "—", f"{DIM}[missing]{RESET}", "")
+            free_rows[name] = {"status": "missing"}
             continue
 
         branch = current_branch(worktree_path) or "(unknown)"
         room_branch[name] = branch
 
         if branch == placeholder:
-            free_rows[name] = (name, "—", "—", "—", f"{DIM}[free]{RESET}", "")
+            free_rows[name] = {"status": "free"}
         else:
             pending.append((room, branch))
 
@@ -459,20 +463,77 @@ def _render_ls() -> None:
         cache.update(cache_updates)
         save_cache(cfg, cache, updated_at=int(time.time()))
 
-    # Build rows in sorted order
-    rows = []
+    # Build structured rows in sorted order
+    result = []
     for room in rooms:
-        name = room["name"]
+        name    = room["name"]
+        project = Path(room["main_repo"]).name
         if name in free_rows:
-            rows.append(free_rows[name])
+            result.append({
+                "project": project,
+                "name": name,
+                "path": room["path"],
+                "branch": None,
+                "status": free_rows[name]["status"],
+                "last_commit_age": None,
+                "merged": False,
+                "pr": None,
+            })
         else:
             branch = room_branch.get(name, "(unknown)")
             merged, pr_info, pushed, age, _ = info_results.get(name, (False, None, False, "?", {}))
-            pr_url         = pr_info["url"] if pr_info else None
-            branch_display = osc8(pr_url, branch) if pr_url else branch
-            status_str     = format_status(merged, pr_info)
-            pr_title       = (pr_info.get("title") or "") if pr_info else ""
-            rows.append((name, branch, branch_display, age, status_str, pr_title))
+            result.append({
+                "project": project,
+                "name": name,
+                "path": room["path"],
+                "branch": branch,
+                "status": "merged" if merged else "in-progress",
+                "last_commit_age": age,
+                "merged": merged,
+                "pr": {
+                    "url": pr_info.get("url"),
+                    "number": pr_info.get("number"),
+                    "ci": pr_info.get("ci"),
+                    "draft": pr_info.get("draft", False),
+                    "title": pr_info.get("title") or "",
+                } if pr_info else None,
+            })
+
+    return {
+        "version": 1,
+        "generated_at": int(time.time()),
+        "any_offline": any_offline,
+        "cache_updated_at": cfg.get("cache_updated_at"),
+        "rooms": result,
+    }
+
+
+def _render_ls() -> None:
+    cfg   = load_config()
+    data  = compute_ls(cfg)
+    rooms = data["rooms"]
+
+    if not rooms:
+        print("No rooms configured yet. Use 'rooms add' to create one.")
+        return
+
+    rows = []
+    for r in rooms:
+        name = r["name"]
+        if r["status"] in ("free", "missing"):
+            label = f"{DIM}[{r['status']}]{RESET}"
+            rows.append((name, "—", "—", "—", label, ""))
+        else:
+            branch = r["branch"]
+            pr = r["pr"]
+            branch_display = osc8(pr["url"], branch) if pr and pr.get("url") else branch
+            pr_info = {
+                "url": pr["url"], "number": pr["number"],
+                "ci": pr["ci"], "draft": pr.get("draft", False),
+            } if pr else None
+            status_str = format_status(r["merged"], pr_info)
+            pr_title   = (pr.get("title") or "") if pr else ""
+            rows.append((name, branch, branch_display, r["last_commit_age"], status_str, pr_title))
 
     # Render grouped by project
     w_name   = max(len("ROOM"),        max(len(r[0]) for r in rows))
@@ -482,7 +543,7 @@ def _render_ls() -> None:
     col_header = f"  {'ROOM':<{w_name}}  {'BRANCH':<{w_branch}}  {'LAST COMMIT':<{w_age}}  {'STATUS':<28}  PR TITLE"
     separator  = "  " + "-" * (w_name + w_branch + w_age + w_title + 32)
 
-    rows_with_project = [(Path(room["main_repo"]).name, row) for room, row in zip(rooms, rows)]
+    rows_with_project = [(r["project"], row) for r, row in zip(rooms, rows)]
     current_project = None
     for project, (name, branch, branch_display, age, status_str, pr_title) in rows_with_project:
         if project != current_project:
@@ -495,7 +556,7 @@ def _render_ls() -> None:
         padding = " " * (w_branch - len(branch))
         print(f"  {name:<{w_name}}  {branch_display}{padding}  {age:<{w_age}}  {status_str:<28}  {pr_title}")
 
-    if any_offline:
+    if data["any_offline"]:
         cached_at = cfg.get("cache_updated_at")
         age_str = human_age(cached_at) if cached_at else "unknown"
         print(f"\n{DIM}offline — cached data from {age_str}{RESET}")
