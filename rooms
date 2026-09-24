@@ -562,8 +562,16 @@ def _render_ls() -> None:
         print(f"\n{DIM}offline — cached data from {age_str}{RESET}")
 
 
+def _render_ls_json() -> None:
+    print(json.dumps(compute_ls(load_config())))
+
+
 def cmd_ls(args: list[str] | None = None) -> None:
-    if "--watch" not in (args or []):
+    args = args or []
+    if "--json" in args:
+        _render_ls_json()
+        return
+    if "--watch" not in args:
         _render_ls()
         return
     try:
