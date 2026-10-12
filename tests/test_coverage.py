@@ -3,6 +3,7 @@ cmd_ls, cmd_occupy, cmd_names, cmd_branches, cmd_occupy_internal,
 cmd_move error paths, cmd_purge error paths, usage, main."""
 
 import json
+import subprocess
 import sys
 import time
 
@@ -840,3 +841,66 @@ class TestMain:
                 rooms.main()
             assert exc.value.code == 0
             assert "rooms add" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# cmd_add — source that is itself a linked worktree (real git)
+# ---------------------------------------------------------------------------
+
+def _git(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def repo_with_room(tmp_path):
+    """A real repo `myproject` with one linked worktree `room-1`, like an existing room."""
+    repo = tmp_path / "code" / "myproject"
+    repo.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    room1 = tmp_path / "rooms" / "room-1"
+    _git("worktree", "add", "-q", "-b", "room-1", str(room1), cwd=repo)
+    return repo, room1
+
+
+class TestCmdAddWorktreeSource:
+    def _setup(self, rooms, monkeypatch, tmp_path):
+        cfg = {"rooms_base": str(tmp_path / "rooms"), "rooms": []}
+        monkeypatch.setattr(rooms, "load_config", lambda: cfg)
+        monkeypatch.setattr(rooms, "save_config", lambda _: None)
+        monkeypatch.setattr(rooms, "detect_default_branch", lambda _: "main")
+        return cfg
+
+    def test_worktree_source_is_registered_under_its_main_repo(self, rooms, monkeypatch, tmp_path, repo_with_room, capsys):
+        repo, room1 = repo_with_room
+        cfg = self._setup(rooms, monkeypatch, tmp_path)
+
+        rooms.cmd_add([str(room1), "room-2"])
+
+        entry = cfg["rooms"][0]
+        assert entry["main_repo"] == str(repo.resolve())
+        assert rooms.project_of(entry) == "myproject"
+        assert "worktree of" in capsys.readouterr().out
+
+    def test_main_repo_source_is_unchanged(self, rooms, monkeypatch, tmp_path, repo_with_room, capsys):
+        repo, _ = repo_with_room
+        cfg = self._setup(rooms, monkeypatch, tmp_path)
+
+        rooms.cmd_add([str(repo), "room-2"])
+
+        assert cfg["rooms"][0]["main_repo"] == str(repo.resolve())
+        assert "worktree of" not in capsys.readouterr().out
+
+
+class TestResolveMainRepo:
+    def test_bare_repo_resolves_to_itself(self, rooms, tmp_path):
+        bare = tmp_path / "myproject.git"
+        _git("init", "-q", "--bare", str(bare), cwd=tmp_path)
+
+        assert rooms.resolve_main_repo(str(bare)) == str(bare.resolve())
+
+    def test_non_git_path_is_returned_unchanged(self, rooms, tmp_path):
+        plain = tmp_path / "not-a-repo"
+        plain.mkdir()
+
+        assert rooms.resolve_main_repo(str(plain)) == str(plain)

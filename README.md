@@ -88,6 +88,8 @@ rooms add git@github.com:org/myproject.git room-1
 rooms add ~/dev/myproject emergency-1 main
 ```
 
+A room's project is its main repo, so a local path that is itself a worktree (for example an existing room) is resolved to the repo it belongs to. `rooms add ~/rooms/room-1 room-2` adds `room-2` to `room-1`'s project instead of creating a new project named `room-1`.
+
 Rooms are created under `~/rooms/<room-name>` by default. Change `rooms_base` in `~/.config/rooms/config.json` to customise.
 
 ---
