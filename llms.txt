@@ -23,7 +23,7 @@ Help: `rooms --help`
 
 Create a new room backed by a git worktree.
 
-- `path-or-url`: local repo path **or** a GitHub SSH URL (`git@github.com:org/repo.git`). If a URL is given, the repo is cloned to `~/code/<repo-name>` first.
+- `path-or-url`: local repo path **or** a GitHub SSH URL (`git@github.com:org/repo.git`). If a URL is given, the repo is cloned to `~/code/<repo-name>` first. A local path that is a linked worktree (e.g. an existing room) is resolved to its main repo, so the new room joins that project.
 - `room-name`: name for the room and its placeholder branch.
 - `branch` (optional): base branch to create the placeholder from. Defaults to the repo's default branch.
 

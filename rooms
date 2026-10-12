@@ -122,6 +122,22 @@ def fetch_repo(repo: str) -> bool:
     return r.returncode == 0
 
 
+def resolve_main_repo(path: str) -> str:
+    """Return the main repository for a git path: itself, or the repo a linked worktree belongs to.
+
+    Rooms are worktrees, so pointing `rooms add` at an existing room must still resolve to the
+    shared repo (the project) rather than the room. Non-git paths are returned unchanged and left
+    for git to reject later.
+    """
+    r = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=path, check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return path
+    common_dir = Path(r.stdout.strip())
+    # Normal repo: <repo>/.git. Bare repos have no .git directory: the common dir is the repo itself.
+    repo = common_dir.parent if common_dir.name == ".git" else common_dir
+    return str(repo.resolve())
+
+
 def detect_default_branch(repo_path: str) -> str:
     """Return main, master, or whatever HEAD points to on the remote."""
     try:
@@ -375,6 +391,12 @@ def cmd_add(args: list[str]) -> None:
         if not Path(main_repo).exists():
             print(f"Error: path '{main_repo}' does not exist.")
             sys.exit(1)
+        # A room's worktree (e.g. another room) is a valid git path, but recording it as
+        # main_repo would file the new room under a bogus project named after that room.
+        resolved = resolve_main_repo(main_repo)
+        if resolved != main_repo:
+            print(f"{ORANGE}Note:{RESET} {main_repo} is a worktree of {resolved}; using that repo.")
+            main_repo = resolved
 
     default_branch = detect_default_branch(main_repo)
     base_branch    = base_branch_override or default_branch
